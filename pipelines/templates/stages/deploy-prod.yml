@@ -35,12 +35,47 @@ stages:
     lockBehavior: sequential
 
     jobs:
+      - job: ReadProductionIdentity
+        displayName: Read currently deployed production identity
+        pool:
+          name: deploy-selfhosted-linux
+        workspace:
+          clean: all
+        steps:
+          - checkout: none
+
+          - bash: |
+              set -euo pipefail
+
+              health_file="${AGENT_TEMPDIRECTORY}/current-production.json"
+
+              set +e
+              http_code="$(curl                 --silent                 --show-error                 --connect-timeout 10                 --max-time 30                 --output "${health_file}"                 --write-out '%{http_code}'                 "${PRODUCTION_URL}/api/health")"
+              curl_status=$?
+              set -e
+
+              current_prod_sha=""
+              if [[ "${curl_status}" -eq 0 && "${http_code}" == "200" && -f "${health_file}" ]]; then
+                current_prod_sha="$(sed -nE 's/.*"commitSha"[[:space:]]*:[[:space:]]*"([0-9a-f]{40})".*/\1/p' "${health_file}" | head -n1)"
+              fi
+
+              echo "Current production SHA: ${current_prod_sha:-<unknown>}"
+              echo "##vso[task.setvariable variable=currentProdSha;isOutput=true]${current_prod_sha}"
+            name: ReadIdentity
+            displayName: Read production health identity
+            env:
+              PRODUCTION_URL: ${{ parameters.productionSmokeTestUrl }}
+
       - job: ReleaseGuard
         displayName: Reject stale or unsafe release candidates
+        dependsOn:
+          - ReadProductionIdentity
         pool:
           name: release-selfhosted-linux
         workspace:
           clean: all
+        variables:
+          currentProdSha: $[ dependencies.ReadProductionIdentity.outputs['ReadIdentity.currentProdSha'] ]
         steps:
           - checkout: self
             clean: true
@@ -54,6 +89,7 @@ stages:
               version="${branch#*/}"
               source_sha="${BUILD_SOURCEVERSION}"
               tag="v${version}"
+              current_prod_sha="${CURRENT_PROD_SHA}"
 
               if [[ ! "${branch}" =~ ^(release|hotfix)/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 echo "Unexpected source branch ${branch}." >&2
@@ -88,8 +124,8 @@ stages:
 
               if [[ "${source_tree}" != "${merge_tree}" ]]; then
                 echo "main merge tree differs from UAT candidate tree." >&2
-                echo "This indicates concurrent main changes or conflict-resolution changes were not in UAT." >&2
-                echo "Incorporate the changes into the release candidate and repeat Build/UAT." >&2
+                echo "Concurrent main changes or conflict-resolution changes were not tested in UAT." >&2
+                echo "Refresh the candidate and repeat Build/UAT." >&2
                 exit 1
               fi
 
@@ -97,14 +133,6 @@ stages:
               if [[ -n "${remote_tag}" ]]; then
                 echo "Version tag ${tag} already exists remotely. Refusing duplicate release." >&2
                 exit 1
-              fi
-
-              health_file="${AGENT_TEMPDIRECTORY}/current-production.json"
-              http_code="$(curl                 --silent                 --show-error                 --connect-timeout 10                 --max-time 30                 --output "${health_file}"                 --write-out '%{http_code}'                 "${PRODUCTION_URL}/api/health" || true)"
-
-              current_prod_sha=""
-              if [[ "${http_code}" == "200" ]]; then
-                current_prod_sha="$(sed -nE 's/.*"commitSha"[[:space:]]*:[[:space:]]*"([0-9a-f]{40})".*/\1/p' "${health_file}" | head -n1)"
               fi
 
               if [[ -n "${current_prod_sha}" ]]; then
@@ -124,7 +152,8 @@ stages:
 
                 if ! git merge-base --is-ancestor "${current_prod_sha}" "${source_sha}"; then
                   echo "Release candidate does not contain current production SHA ${current_prod_sha}." >&2
-                  echo "A newer hotfix/release would be reverted. Refresh the candidate and repeat UAT." >&2
+                  echo "A newer production hotfix/release would be reverted." >&2
+                  echo "Refresh the candidate and repeat Build/UAT." >&2
                   exit 1
                 fi
               else
@@ -142,9 +171,9 @@ stages:
               fi
 
               echo "Release freshness checks passed."
-            displayName: Verify candidate, main merge, tag, and current production ancestry
+            displayName: Verify candidate, main merge, tag, and production ancestry
             env:
-              PRODUCTION_URL: ${{ parameters.productionSmokeTestUrl }}
+              CURRENT_PROD_SHA: $(currentProdSha)
               INITIAL_RELEASE: ${{ lower(parameters.initialProductionRelease) }}
 
       - deployment: DeployProduction
