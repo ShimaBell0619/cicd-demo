@@ -2,6 +2,8 @@
 
 This is the first tabletop implementation. It is intentionally small enough to review before the .NET repositories adopt the same lifecycle.
 
+The **production assumption is Azure Repos Git + Azure Pipelines**. This GitHub repository is only a convenient working mirror for developing the demo in chat.
+
 ## Pipelines to create
 
 Create two Azure Pipelines against this GitHub repository:
@@ -13,11 +15,12 @@ Create two Azure Pipelines against this GitHub repository:
 
 ## Required Azure DevOps resources
 
-1. Self-hosted agent pool named `self-hosted-linux`.
-2. Azure DevOps Environments: `dev`, `uat`, `prod`, `dr`.
-3. Configure a manual approval check on the `prod` Environment.
-4. Azure Resource Manager service connections for the target environments.
-5. Four Linux App Services. PROD additionally has a `staging` deployment slot.
+1. An Azure Repos Git repository containing this code.
+2. Self-hosted agent pool named `self-hosted-linux`.
+3. Azure DevOps Environments: `dev`, `uat`, `prod`, `dr`.
+4. Configure a manual approval check on the `prod` Environment.
+5. Azure Resource Manager service connections for the target environments.
+6. Four Linux App Services. PROD additionally has a `staging` deployment slot.
 
 Replace every `REPLACE_WITH_...` value in the two pipeline entrypoint files.
 
@@ -103,3 +106,26 @@ The reusable templates support `/api/health` smoke tests.
 - PROD staging and production smoke tests are mandatory. The release entrypoint currently contains `REPLACE_WITH_...` URL placeholders so an unconfigured pipeline fails before a successful production rollout instead of silently skipping verification.
 
 For a Private Endpoint-only App Service, the self-hosted agent must have network/DNS reachability to those endpoints.
+
+
+## Azure Repos PR validation
+
+Azure Repos Git does not use the YAML `pr:` trigger for pull-request validation.
+
+Configure **Branch Policies > Build validation** on at least `develop` and `main`, pointing to the CI pipeline. Use an automatic, required validation policy for the protected branches.
+
+The YAML therefore explicitly uses `pr: none`; PR validation is an Azure Repos branch-policy concern.
+
+## Manual DEV deployment
+
+The normal path remains automatic:
+
+```text
+push/merge to develop
+  -> CI pipeline
+  -> DEV
+```
+
+A manual DEV redeployment is also available without another pipeline: use **Run pipeline**, select the `develop` branch, and run the same CI pipeline. Because the DEV stage is conditioned on `refs/heads/develop`, manually running another branch builds it but does not overwrite the shared DEV environment.
+
+This manual path is intended for retries or deliberate redeployment, not as the default delivery mechanism.
