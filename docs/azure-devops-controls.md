@@ -33,10 +33,10 @@ For the PROD Azure Resource Manager service connection:
 1. Disable "Grant access permission to all pipelines".
 2. Authorize only the Release Pipeline.
 3. Configure **Approvals and checks** on the service connection itself.
-4. Configure a **Required template** check for the production release policy.
-5. In production, keep that required template in a separately protected Azure Repos template repository/ref that release branches cannot modify.
+4. Configure a **Required template** check for the production release policy. The demo Release Pipeline now uses `extends` with `pipelines/templates/pipeline/release.yml`, so the check has an explicit root policy template to require.
+5. For production, move that policy template to a separately protected Azure Repos template repository/ref that release branches cannot modify, and point both `extends` and the Required template check at that protected template.
 
-The local templates in this demo show the intended structure but are not a security boundary by themselves.
+The in-repository policy template demonstrates the enforcement shape, but it is not a strong security boundary while a release branch can modify the same repository.
 
 The `prod` Environment should also have:
 - designated production approvers,
