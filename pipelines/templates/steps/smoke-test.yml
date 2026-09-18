@@ -1,40 +1,65 @@
 parameters:
   - name: url
     type: string
+  - name: expectedEnvironment
+    type: string
+  - name: expectedCommitSha
+    type: string
+  - name: expectedBuildId
+    type: string
+  - name: expectedVersion
+    type: string
+    default: ''
   - name: displayName
     type: string
-    default: Verify deployed release identity
+    default: Verify deployed artifact identity
+  - name: attempts
+    type: number
+    default: 30
+  - name: delaySeconds
+    type: number
+    default: 10
 
 steps:
   - bash: |
       set -euo pipefail
-
       response="$(Agent.TempDirectory)/health-${SYSTEM_JOBID}-${SYSTEM_JOBATTEMPT}.json"
-      http_code="$(curl         --silent         --show-error         --connect-timeout 10         --max-time 30         --retry 6         --retry-all-errors         --retry-delay 5         --output "${response}"         --write-out '%{http_code}'         "${HEALTH_URL}/api/health")"
 
-      cat "${response}"
+      for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+        rm -f "${response}"
+        set +e
+        http_code="$(curl           --silent           --show-error           --connect-timeout 10           --max-time 30           --output "${response}"           --write-out '%{http_code}'           "${HEALTH_URL}/api/health")"
+        curl_status=$?
+        set -e
 
-      if [[ "${http_code}" != "200" ]]; then
-        echo "Health endpoint returned HTTP ${http_code}; expected 200." >&2
-        exit 1
-      fi
+        if [[ "${curl_status}" -eq 0 && "${http_code}" == "200" && -s "${response}" ]] &&
+          jq -e             --arg environment "${EXPECTED_ENVIRONMENT}"             --arg commit "${EXPECTED_COMMIT_SHA}"             --arg build "${EXPECTED_BUILD_ID}"             --arg version "${EXPECTED_VERSION}" '
+              type == "object"
+              and .status == "ok"
+              and (.service | type == "string")
+              and .environment == $environment
+              and .commitSha == $commit
+              and .buildId == $build
+              and (($version == "") or (.version == $version))
+            ' "${response}" >/dev/null; then
+          cat "${response}"
+          echo
+          exit 0
+        fi
 
-      grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "${response}" || {
-        echo "Health response status is not ok." >&2
-        exit 1
-      }
+        echo "Attempt ${attempt}/${MAX_ATTEMPTS}: expected identity not active yet."
+        [[ ! -f "${response}" ]] || cat "${response}" || true
+        [[ "${attempt}" -ge "${MAX_ATTEMPTS}" ]] || sleep "${DELAY_SECONDS}"
+      done
 
-      grep -Eq '"commitSha"[[:space:]]*:[[:space:]]*"'${BUILD_SOURCEVERSION}'"' "${response}" || {
-        echo "Health response is not running expected commit ${BUILD_SOURCEVERSION}." >&2
-        exit 1
-      }
-
-      grep -Eq '"buildId"[[:space:]]*:[[:space:]]*"'${BUILD_BUILDID}'"' "${response}" || {
-        echo "Health response is not running expected build ${BUILD_BUILDID}." >&2
-        exit 1
-      }
-    displayName: ${{ parameters.displayName }}
+      echo "Timed out waiting for expected deployed artifact identity." >&2
+      exit 1
     env:
       HEALTH_URL: ${{ parameters.url }}
-      BUILD_SOURCEVERSION: $(Build.SourceVersion)
-      BUILD_BUILDID: $(Build.BuildId)
+      EXPECTED_ENVIRONMENT: ${{ parameters.expectedEnvironment }}
+      EXPECTED_COMMIT_SHA: ${{ parameters.expectedCommitSha }}
+      EXPECTED_BUILD_ID: ${{ parameters.expectedBuildId }}
+      EXPECTED_VERSION: ${{ parameters.expectedVersion }}
+      MAX_ATTEMPTS: ${{ parameters.attempts }}
+      DELAY_SECONDS: ${{ parameters.delaySeconds }}
+    displayName: ${{ parameters.displayName }}

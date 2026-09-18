@@ -7,6 +7,7 @@ export async function GET() {
     {
       status: "ok",
       service: "cicd-demo-nextjs",
+      environment: process.env.APP_ENV ?? "unknown",
       version: releaseInfo.version,
       commitSha: releaseInfo.commitSha,
       buildId: releaseInfo.buildId,

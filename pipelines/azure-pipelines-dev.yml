@@ -1,0 +1,20 @@
+name: dev-$(Date:yyyyMMdd).$(Rev:r)
+
+trigger:
+  branches:
+    include:
+      - develop
+
+pr: none
+
+resources:
+  repositories:
+    - repository: policy
+      type: git
+      name: cicd-demo
+      ref: refs/heads/main
+
+extends:
+  template: pipelines/templates/pipeline/root.yml@policy
+  parameters:
+    mode: dev

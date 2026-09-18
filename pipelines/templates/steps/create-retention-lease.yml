@@ -1,0 +1,29 @@
+parameters:
+  - name: daysValid
+    type: number
+  - name: ownerPrefix
+    type: string
+
+steps:
+  - bash: |
+      set -euo pipefail
+      body="$(jq -n         --argjson days "${DAYS_VALID}"         --argjson definition "${SYSTEM_DEFINITIONID}"         --arg owner "${OWNER_PREFIX}-${BUILD_BUILDID}"         --argjson run "${BUILD_BUILDID}" '
+        [{
+          daysValid: $days,
+          definitionId: $definition,
+          ownerId: $owner,
+          protectPipeline: false,
+          runId: $run
+        }]
+      ')"
+      curl         --fail-with-body         --silent         --show-error         --request POST         --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}"         --header "Content-Type: application/json"         --data "${body}"         "${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECTID}/_apis/build/retention/leases?api-version=7.1" |
+        jq .
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+      SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
+      SYSTEM_DEFINITIONID: $(System.DefinitionId)
+      BUILD_BUILDID: $(Build.BuildId)
+      DAYS_VALID: ${{ parameters.daysValid }}
+      OWNER_PREFIX: ${{ parameters.ownerPrefix }}
+    displayName: Create ${{ parameters.daysValid }}-day retention lease

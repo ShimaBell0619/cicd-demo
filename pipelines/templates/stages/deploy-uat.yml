@@ -16,6 +16,8 @@ parameters:
     type: string
   - name: smokeTestUrl
     type: string
+  - name: expectedEnvironment
+    type: string
   - name: approvers
     type: string
 
@@ -25,10 +27,8 @@ stages:
     dependsOn: ${{ parameters.dependsOn }}
     condition: succeeded()
     lockBehavior: sequential
-
     jobs:
       - deployment: DeployUAT
-        displayName: Deploy UAT
         environment: ${{ parameters.environmentName }}
         pool:
           name: deploy-selfhosted-linux
@@ -39,16 +39,14 @@ stages:
             deploy:
               steps:
                 - checkout: none
-
                 - download: current
                   artifact: ${{ parameters.artifactName }}
-
                 - template: ../steps/verify-artifact.yml
                   parameters:
-                    artifactName: ${{ parameters.artifactName }}
-
+                    artifactDirectory: $(Pipeline.Workspace)/${{ parameters.artifactName }}
+                    expectedCommitSha: $(Build.SourceVersion)
+                    expectedBuildId: $(Build.BuildId)
                 - task: AzureWebApp@1
-                  displayName: Deploy Azure Web App
                   inputs:
                     azureSubscription: ${{ parameters.azureSubscription }}
                     appType: webAppLinux
@@ -56,14 +54,16 @@ stages:
                     package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/webapp.zip
                     runtimeStack: 'NODE|22-lts'
                     startUpCommand: 'HOSTNAME=0.0.0.0 node server.js'
-
+                  displayName: Deploy UAT
                 - template: ../steps/smoke-test.yml
                   parameters:
                     url: ${{ parameters.smokeTestUrl }}
+                    expectedEnvironment: ${{ parameters.expectedEnvironment }}
+                    expectedCommitSha: $(Build.SourceVersion)
+                    expectedBuildId: $(Build.BuildId)
                     displayName: Verify UAT artifact identity
 
       - job: UATAcceptance
-        displayName: UAT acceptance and main merge
         dependsOn:
           - DeployUAT
         pool: server
@@ -77,14 +77,15 @@ stages:
               allowApproversToApproveTheirOwnRuns: false
               instructions: |
                 Confirm UAT for:
-                  Version branch: $(Build.SourceBranch)
+                  Source branch: $(Build.SourceBranch)
                   Candidate SHA: $(Build.SourceVersion)
-                  Pipeline run: $(Build.BuildId)
+                  Release Run ID: $(Build.BuildId)
 
                 Before resuming:
                 1. Confirm UAT passed for this exact candidate.
-                2. Complete release/hotfix -> main using Basic merge (no squash/rebase).
-                3. Do not add commits to the release/hotfix branch after this build.
-                4. Resume this same run only after the PR is merged.
+                2. Complete release/hotfix -> main using Basic merge.
+                3. Do not squash, rebase, or alter the candidate while merging.
+                4. The source branch may be deleted after merge.
+                5. Resume this same run only after the PR is merged.
               onTimeout: reject
             displayName: Accept UAT and confirm main merge

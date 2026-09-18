@@ -1,0 +1,233 @@
+parameters:
+  - name: mode
+    type: string
+    values:
+      - validate
+      - dev
+      - release
+      - recovery
+  - name: initialProductionRelease
+    type: boolean
+    default: false
+  - name: recoveryAction
+    type: string
+    default: verify-production
+  - name: recoveryReleaseRunId
+    type: string
+    default: ''
+  - name: recoveryRollbackRunId
+    type: string
+    default: ''
+
+variables:
+  nodeVersion: '22.x'
+  artifactName: webapp
+
+stages:
+  - ${{ if eq(parameters.mode, 'validate') }}:
+      - stage: Validate
+        displayName: Build and validate untrusted application code
+        jobs:
+          - job: Validate
+            pool:
+              name: build-ephemeral-linux
+            workspace:
+              clean: all
+            steps:
+              - checkout: self
+                clean: true
+                fetchDepth: 0
+                persistCredentials: false
+              - template: ../steps/node-build.yml
+                parameters:
+                  nodeVersion: $(nodeVersion)
+                  artifactName: $(artifactName)
+                  publishArtifact: false
+
+  - ${{ if eq(parameters.mode, 'dev') }}:
+      - stage: Build_DEV
+        displayName: Build develop artifact
+        jobs:
+          - job: Build
+            pool:
+              name: build-ephemeral-linux
+            workspace:
+              clean: all
+            steps:
+              - checkout: self
+                clean: true
+                fetchDepth: 0
+                persistCredentials: false
+              - bash: |
+                  set -euo pipefail
+                  [[ "${BUILD_SOURCEBRANCH}" == "refs/heads/develop" ]] || {
+                    echo "DEV Pipeline can run only from refs/heads/develop." >&2
+                    exit 1
+                  }
+                displayName: Require develop source branch
+              - template: ../steps/node-build.yml
+                parameters:
+                  nodeVersion: $(nodeVersion)
+                  artifactName: $(artifactName)
+
+      - stage: Guard_DEV
+        displayName: Reject stale develop runs
+        dependsOn:
+          - Build_DEV
+        condition: succeeded()
+        jobs:
+          - job: Freshness
+            pool:
+              name: build-ephemeral-linux
+            workspace:
+              clean: all
+            steps:
+              - checkout: self
+                clean: true
+                fetchDepth: 1
+                persistCredentials: true
+              - bash: |
+                  set -euo pipefail
+                  remote_head="$(git ls-remote origin refs/heads/develop | awk 'NR==1 {print $1}')"
+                  [[ "${remote_head}" == "${BUILD_SOURCEVERSION}" ]] || {
+                    echo "A newer develop commit exists. This stale run will not deploy." >&2
+                    echo "Run SHA: ${BUILD_SOURCEVERSION}" >&2
+                    echo "develop HEAD: ${remote_head:-<missing>}" >&2
+                    exit 1
+                  }
+                displayName: Verify develop HEAD
+
+      - template: ../stages/deploy-webapp.yml
+        parameters:
+          stageName: Deploy_DEV
+          displayName: Deploy current develop artifact to DEV
+          dependsOn:
+            - Guard_DEV
+          environmentName: dev
+          azureSubscription: REPLACE_WITH_DEV_SERVICE_CONNECTION
+          appName: REPLACE_WITH_DEV_WEB_APP
+          artifactName: $(artifactName)
+          smokeTestUrl: https://REPLACE_WITH_DEV_HOST
+          expectedEnvironment: dev
+
+  - ${{ if eq(parameters.mode, 'release') }}:
+      - stage: Build_Release
+        displayName: Build immutable release artifact
+        jobs:
+          - job: Build
+            pool:
+              name: build-ephemeral-linux
+            workspace:
+              clean: all
+            steps:
+              - checkout: self
+                clean: true
+                fetchDepth: 0
+                persistCredentials: false
+              - bash: |
+                  set -euo pipefail
+                  branch="${BUILD_SOURCEBRANCH#refs/heads/}"
+                  case "${branch}" in
+                    release/*|hotfix/*) version="${branch#*/}" ;;
+                    *)
+                      echo "Release Pipeline must run from release/X.Y.Z or hotfix/X.Y.Z." >&2
+                      exit 1
+                      ;;
+                  esac
+                  [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                    echo "Version must use X.Y.Z format: ${version}" >&2
+                    exit 1
+                  }
+                  echo "##vso[task.setvariable variable=releaseVersion]${version}"
+                  echo "##vso[build.updatebuildnumber]${version}.${BUILD_BUILDID}"
+                displayName: Validate release source and version
+              - template: ../steps/node-build.yml
+                parameters:
+                  nodeVersion: $(nodeVersion)
+                  artifactName: $(artifactName)
+                  releaseVersion: $(releaseVersion)
+
+      - template: ../stages/deploy-webapp.yml
+        parameters:
+          stageName: Deploy_Release_DEV
+          displayName: Deploy release candidate to DEV
+          dependsOn:
+            - Build_Release
+          environmentName: dev
+          azureSubscription: REPLACE_WITH_DEV_SERVICE_CONNECTION
+          appName: REPLACE_WITH_DEV_WEB_APP
+          artifactName: $(artifactName)
+          smokeTestUrl: https://REPLACE_WITH_DEV_HOST
+          expectedEnvironment: dev
+
+      - template: ../stages/deploy-uat.yml
+        parameters:
+          stageName: Deploy_UAT
+          displayName: Deploy and accept UAT
+          dependsOn:
+            - Deploy_Release_DEV
+          environmentName: uat
+          azureSubscription: REPLACE_WITH_UAT_SERVICE_CONNECTION
+          appName: REPLACE_WITH_UAT_WEB_APP
+          artifactName: $(artifactName)
+          smokeTestUrl: https://REPLACE_WITH_UAT_HOST
+          expectedEnvironment: uat
+          approvers: REPLACE_WITH_UAT_APPROVERS
+
+      - stage: Retain_Candidate
+        displayName: Retain accepted UAT candidate
+        dependsOn:
+          - Deploy_UAT
+        condition: succeeded()
+        jobs:
+          - job: RetainCandidate
+            pool:
+              name: release-control-linux
+            steps:
+              - checkout: none
+              - template: ../steps/create-retention-lease.yml
+                parameters:
+                  daysValid: 30
+                  ownerPrefix: candidate
+
+      - template: ../stages/deploy-prod.yml
+        parameters:
+          stageName: Promote_PROD_DR
+          displayName: Promote accepted candidate to PROD and DR
+          dependsOn:
+            - Retain_Candidate
+          prodEnvironmentName: prod
+          drEnvironmentName: dr
+          prodAzureSubscription: REPLACE_WITH_PROD_SERVICE_CONNECTION
+          drAzureSubscription: REPLACE_WITH_DR_SERVICE_CONNECTION
+          appName: REPLACE_WITH_PROD_WEB_APP
+          drAppName: REPLACE_WITH_DR_WEB_APP
+          resourceGroupName: REPLACE_WITH_PROD_RESOURCE_GROUP
+          artifactName: $(artifactName)
+          slotName: staging
+          stagingSmokeTestUrl: https://REPLACE_WITH_PROD_STAGING_HOST
+          productionSmokeTestUrl: https://REPLACE_WITH_PROD_HOST
+          drSmokeTestUrl: https://REPLACE_WITH_DR_HOST
+          tagAzureDevOpsServiceConnection: REPLACE_WITH_TAG_AZDO_SERVICE_CONNECTION
+          initialProductionRelease: ${{ parameters.initialProductionRelease }}
+
+  - ${{ if eq(parameters.mode, 'recovery') }}:
+      - template: ../stages/recovery.yml
+        parameters:
+          action: ${{ parameters.recoveryAction }}
+          releaseRunId: ${{ parameters.recoveryReleaseRunId }}
+          rollbackRunId: ${{ parameters.recoveryRollbackRunId }}
+          releasePipelineDefinitionId: REPLACE_WITH_RELEASE_PIPELINE_DEFINITION_ID
+          artifactName: $(artifactName)
+          prodEnvironmentName: prod
+          drEnvironmentName: dr
+          prodAzureSubscription: REPLACE_WITH_PROD_SERVICE_CONNECTION
+          drAzureSubscription: REPLACE_WITH_DR_SERVICE_CONNECTION
+          appName: REPLACE_WITH_PROD_WEB_APP
+          drAppName: REPLACE_WITH_DR_WEB_APP
+          resourceGroupName: REPLACE_WITH_PROD_RESOURCE_GROUP
+          slotName: staging
+          productionUrl: https://REPLACE_WITH_PROD_HOST
+          stagingUrl: https://REPLACE_WITH_PROD_STAGING_HOST
+          drUrl: https://REPLACE_WITH_DR_HOST
+          tagAzureDevOpsServiceConnection: REPLACE_WITH_TAG_AZDO_SERVICE_CONNECTION

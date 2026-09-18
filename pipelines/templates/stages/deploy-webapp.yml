@@ -6,9 +6,6 @@ parameters:
   - name: dependsOn
     type: object
     default: []
-  - name: condition
-    type: string
-    default: succeeded()
   - name: environmentName
     type: string
   - name: azureSubscription
@@ -19,17 +16,17 @@ parameters:
     type: string
   - name: smokeTestUrl
     type: string
+  - name: expectedEnvironment
+    type: string
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: ${{ parameters.displayName }}
     dependsOn: ${{ parameters.dependsOn }}
-    condition: ${{ parameters.condition }}
+    condition: succeeded()
     lockBehavior: sequential
-
     jobs:
       - deployment: Deploy
-        displayName: Deploy ${{ parameters.environmentName }}
         environment: ${{ parameters.environmentName }}
         pool:
           name: deploy-selfhosted-linux
@@ -40,17 +37,14 @@ stages:
             deploy:
               steps:
                 - checkout: none
-
                 - download: current
                   artifact: ${{ parameters.artifactName }}
-                  displayName: Download release artifact
-
                 - template: ../steps/verify-artifact.yml
                   parameters:
-                    artifactName: ${{ parameters.artifactName }}
-
+                    artifactDirectory: $(Pipeline.Workspace)/${{ parameters.artifactName }}
+                    expectedCommitSha: $(Build.SourceVersion)
+                    expectedBuildId: $(Build.BuildId)
                 - task: AzureWebApp@1
-                  displayName: Deploy Azure Web App
                   inputs:
                     azureSubscription: ${{ parameters.azureSubscription }}
                     appType: webAppLinux
@@ -58,8 +52,11 @@ stages:
                     package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/webapp.zip
                     runtimeStack: 'NODE|22-lts'
                     startUpCommand: 'HOSTNAME=0.0.0.0 node server.js'
-
+                  displayName: Deploy Azure Web App
                 - template: ../steps/smoke-test.yml
                   parameters:
                     url: ${{ parameters.smokeTestUrl }}
-                    displayName: Smoke test ${{ parameters.environmentName }}
+                    expectedEnvironment: ${{ parameters.expectedEnvironment }}
+                    expectedCommitSha: $(Build.SourceVersion)
+                    expectedBuildId: $(Build.BuildId)
+                    displayName: Verify ${{ parameters.environmentName }} artifact identity

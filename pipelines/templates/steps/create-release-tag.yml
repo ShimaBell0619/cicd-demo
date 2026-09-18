@@ -1,0 +1,65 @@
+parameters:
+  - name: azureDevOpsServiceConnection
+    type: string
+  - name: version
+    type: string
+  - name: commitSha
+    type: string
+  - name: pipelineBuildId
+    type: string
+  - name: webAppSha256
+    type: string
+
+steps:
+  - task: AzureCLI@3
+    inputs:
+      connectionType: azureDevOps
+      azureDevOpsServiceConnection: ${{ parameters.azureDevOpsServiceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        tag="v${RELEASE_VERSION}"
+        base_url="$(System.CollectionUri)$(System.TeamProjectId)/_apis/git/repositories/$(Build.Repository.ID)"
+        resource="499b84ac-1321-427f-aa17-267ca6975798"
+
+        read_target() {
+          az rest             --method get             --url "${base_url}/refs?filter=tags/${tag}&peelTags=true&api-version=7.1"             --resource "${resource}"             --output json |
+            jq -r --arg wanted "refs/tags/${tag}" '
+              [.value[] | select(.name == $wanted)][0]
+              | if . == null then "" else (.peeledObjectId // .objectId // "") end
+            '
+        }
+
+        existing="$(read_target)"
+        if [[ -n "${existing}" ]]; then
+          [[ "${existing}" == "${RELEASE_COMMIT_SHA}" ]] || {
+            echo "Tag ${tag} exists at ${existing}; expected ${RELEASE_COMMIT_SHA}." >&2
+            exit 1
+          }
+          exit 0
+        fi
+
+        message="Production release ${tag}; pipelineRun=${RELEASE_BUILD_ID}; webAppSha256=${WEBAPP_SHA256}"
+        body="$(jq -n           --arg name "${tag}"           --arg objectId "${RELEASE_COMMIT_SHA}"           --arg message "${message}" '
+          {name: $name, taggedObject: {objectId: $objectId}, message: $message}
+        ')"
+
+        set +e
+        az rest           --method post           --url "${base_url}/annotatedtags?api-version=7.1"           --resource "${resource}"           --headers "Content-Type=application/json"           --body "${body}"           --output json > "$(Agent.TempDirectory)/tag-create.json"
+        create_status=$?
+        set -e
+
+        [[ "${create_status}" -eq 0 ]] || echo "Tag create returned an error; verifying remote state." >&2
+
+        remote_after="$(read_target)"
+        [[ "${remote_after}" == "${RELEASE_COMMIT_SHA}" ]] || {
+          echo "Remote tag verification failed." >&2
+          exit 1
+        }
+    env:
+      RELEASE_VERSION: ${{ parameters.version }}
+      RELEASE_COMMIT_SHA: ${{ parameters.commitSha }}
+      RELEASE_BUILD_ID: ${{ parameters.pipelineBuildId }}
+      WEBAPP_SHA256: ${{ parameters.webAppSha256 }}
+    displayName: Create and verify annotated production tag with dedicated identity

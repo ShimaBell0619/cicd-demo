@@ -1,0 +1,41 @@
+name: recovery-$(Date:yyyyMMdd).$(Rev:r)
+
+trigger: none
+pr: none
+
+parameters:
+  - name: action
+    displayName: Recovery action
+    type: string
+    default: verify-production
+    values:
+      - verify-production
+      - tag-only
+      - sync-dr
+      - reverse-swap
+      - redeploy-production
+
+  - name: releaseRunId
+    displayName: Release Pipeline Run ID to recover or verify
+    type: string
+    default: ''
+
+  - name: rollbackRunId
+    displayName: Previous Release Pipeline Run ID for rollback actions
+    type: string
+    default: ''
+
+resources:
+  repositories:
+    - repository: policy
+      type: git
+      name: cicd-demo
+      ref: refs/heads/main
+
+extends:
+  template: pipelines/templates/pipeline/root.yml@policy
+  parameters:
+    mode: recovery
+    recoveryAction: ${{ parameters.action }}
+    recoveryReleaseRunId: ${{ parameters.releaseRunId }}
+    recoveryRollbackRunId: ${{ parameters.rollbackRunId }}
