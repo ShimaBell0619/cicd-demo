@@ -1,81 +1,74 @@
-# Azure Pipelines setup
+# Azure Pipelines v3
 
-This is the Node.js / Next.js tabletop implementation for the delivery model that will later be adapted to .NET Functions.
+Production target: **Azure Repos Git + Azure Pipelines**.
 
-The production assumption is **Azure Repos Git + Azure Pipelines**. GitHub is only the working mirror used for development/review in this chat.
+## Four Pipeline definitions
 
-## Pipeline model
-
-| Pipeline | Trigger | Role |
+| Pipeline | YAML | Start |
 | --- | --- | --- |
-| CI | Automatic on `develop`, `release/*`, `hotfix/*`; PR Build Validation is Branch Policy | Build validation. Only `develop` automatically deploys to shared DEV |
-| Release | Manual only | Build once and promote an explicitly selected `release/X.Y.Z` or `hotfix/X.Y.Z` |
+| PR Validation | `azure-pipelines-pr.yml` | Azure Repos Branch Policy; release/hotfix push CI |
+| DEV | `azure-pipelines-dev.yml` | automatic `develop` |
+| Release | `azure-pipelines-release.yml` | manual `release/X.Y.Z` or `hotfix/X.Y.Z` |
+| Recovery | `azure-pipelines-recovery.yml` | manual protected `main` |
 
-Release/hotfix branch creation never starts deployment automatically.
+All entry points extend one protected root policy template.
 
-## Current release flow
+## Normal development
+
+```text
+feature/*
+  -> PR Validation
+  -> develop
+  -> DEV Pipeline
+       Build on ephemeral host
+       -> reject stale develop Run
+       -> deploy DEV
+       -> verify env/SHA/Build ID
+```
+
+## Release
 
 ```text
 release/X.Y.Z or hotfix/X.Y.Z
-  -> manually start Release Pipeline
-  -> Build once
-  -> DEV / identity smoke
-  -> UAT / identity smoke
-  -> ManualValidation while UAT stage remains active
-       -> UAT accepted
-       -> Basic-merge PR into main
-  -> create 10-year retention lease for this run/artifact
-  -> PROD protected-resource checks / approval / exclusive lock
-  -> release guard:
-       branch HEAD == UAT SHA
-       exact Basic-merge result tree == UAT candidate tree
-       candidate is contained in main
-       version tag does not already exist
-       candidate contains currently deployed PROD SHA
-  -> deploy same ZIP to PROD staging
-  -> verify HTTP 200 + expected commit SHA + expected Build ID
-  -> swap
-  -> verify PROD is running same commit/build
-  -> create and remotely verify vX.Y.Z
-  -> deploy same artifact to DR
-```
-
-The version tag means **production deployment and production identity smoke test succeeded**.
-
-## Normal Git Flow
-
-```text
-feature/* -> PR -> develop -> CI -> DEV
-develop -> release/X.Y.Z
-release fixes -> PR back to develop
-release -> UAT -> Basic merge to main -> PROD
-```
-
-Any fix made on a release branch must be merged back to `develop` with history preserved so that the current production release SHA remains in future release ancestry.
-
-## Hotfix
-
-A hotfix starts from the **currently deployed production version tag**, not blindly from main HEAD.
-
-```text
-currently deployed v1.2.3
-  -> hotfix/1.2.4
-  -> fix / CI / review
   -> manual Release Pipeline
-  -> DEV -> UAT
-  -> Basic merge to main
-  -> PROD
-  -> v1.2.4
-  -> DR
-  -> Basic-merge hotfix back to develop
-  -> also update any active release branch or invalidate/rebuild that release
+  -> Build once on disposable build host
+  -> DEV
+  -> UAT
+  -> ManualValidation
+       UAT accepted
+       exact candidate Basic-merged to main
+  -> 30-day candidate retention
+  -> protected PROD/DR promotion stage
+       read current PROD identity
+       strict main HEAD/candidate/current-PROD guard
+       deploy same ZIP to staging
+       wait for exact staging identity
+       swap
+       wait for exact PROD identity
+       create annotated vX.Y.Z using dedicated Entra WIF Azure DevOps identity
+       create long production retention lease
+       deploy same tagged artifact to DR
+       verify exact DR identity
 ```
 
-If a hotfix overtakes an older release candidate, reject/cancel the older candidate. It must not resume later.
+`vX.Y.Z` is created before the PROD/DR promotion stage releases its protected-resource lock.
 
-## Artifact identity
+Any main change after UAT merge invalidates the candidate.
 
-Each run publishes:
+## Recovery
+
+Do not rerun normal Release after a post-swap incident.
+
+Recovery actions:
+- `verify-production`
+- `tag-only`
+- `sync-dr`
+- `reverse-swap`
+- `redeploy-production`
+
+Recovery downloads a **specific Release Pipeline Run** using `DownloadPipelineArtifact@2`. It operates on the retained artifact rather than rebuilding from Git.
+
+## Artifact
 
 ```text
 webapp.zip
@@ -84,46 +77,18 @@ release-manifest.json
 artifact-checksums.sha256
 ```
 
-Checksums use **relative artifact filenames**, so verification always checks the downloaded Pipeline Artifact rather than a stale build-agent path.
+Manifest identifies source commit, source branch, Pipeline definition/Run, artifact version, ZIP digest, SBOM digest and SBOM scope.
 
-`release-manifest.json` records repository, source SHA, source branch, pipeline definition/run IDs, version, ZIP digest and SBOM digest.
+Smoke tests also validate runtime `APP_ENV`, preventing a correct artifact on the wrong environment/slot URL from passing.
 
-The health endpoint embeds the candidate commit SHA and Pipeline Build ID into the built artifact. Environment smoke tests require:
-- HTTP 200,
-- `status=ok`,
-- expected `commitSha`,
-- expected `buildId`.
+## Known prerequisite
 
-## Dependencies / cache / SBOM
-
-A committed `package-lock.json` is mandatory and CI uses `npm ci`.
-
-Caches:
-- npm download cache keyed by OS, Node and lockfile,
-- Next.js incremental cache keyed by OS, architecture, Node, lockfile and source SHA, with broader restore keys,
-- no `node_modules` cache.
-
-CycloneDX is pinned as a dev dependency. The generated SBOM is explicitly a **project production-dependency SBOM**, not a claim that it is a byte-for-byte inventory of the final ZIP.
-
-Known tabletop prerequisite: this mirror still needs a valid `package-lock.json` generated from the committed `package.json` in a Node 22 environment:
+Generate and commit a valid Node 22 `package-lock.json` before the first execution:
 
 ```bash
 npm install --package-lock-only
 ```
 
-## Production failure / rollback
+Pipeline installs use `npm ci` thereafter.
 
-A production smoke failure after swap does **not** automatically swap back. Automatic rollback is unsafe when data/schema compatibility is unknown.
-
-Use the retained Pipeline Artifact and the runbook in [docs/azure-devops-controls.md](../docs/azure-devops-controls.md). Do not rerun the entire release from Build after a post-swap incident.
-
-## Mandatory Azure DevOps configuration
-
-YAML alone does not enforce the security boundary. Apply every control in [docs/azure-devops-controls.md](../docs/azure-devops-controls.md), particularly:
-- physically separate CI / release / deploy agent hosts,
-- Exclusive locks,
-- PROD Service Connection Approvals and checks,
-- Required template from a separately protected template repository,
-- Release-only service connection authorization,
-- dedicated tag identity,
-- Private Endpoint + SCM DNS/reachability.
+See [docs/azure-devops-controls.md](../docs/azure-devops-controls.md) before creating the Azure DevOps resources.
