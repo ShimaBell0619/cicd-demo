@@ -21,10 +21,8 @@ parameters:
     default: staging
   - name: stagingSmokeTestUrl
     type: string
-    default: ''
   - name: productionSmokeTestUrl
     type: string
-    default: ''
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -62,14 +60,13 @@ stages:
                     resourceGroupName: ${{ parameters.resourceGroupName }}
                     slotName: ${{ parameters.slotName }}
                     package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/webapp.zip
-                    runtimeStack: NODE|22-lts
+                    runtimeStack: 'NODE|22-lts'
                     startUpCommand: node server.js
 
-                ${{ if ne(parameters.stagingSmokeTestUrl, '') }}:
-                  - bash: |
-                      set -euo pipefail
-                      curl --fail --silent --show-error                         --retry 6                         --retry-delay 5                         "${{ parameters.stagingSmokeTestUrl }}/api/health"
-                    displayName: Smoke test staging slot
+                - bash: |
+                    set -euo pipefail
+                    curl --fail --silent --show-error --retry 6 --retry-delay 5 "${{ parameters.stagingSmokeTestUrl }}/api/health"
+                  displayName: Smoke test staging slot
 
                 - task: AzureAppServiceManage@0
                   displayName: Swap staging to production
@@ -81,8 +78,7 @@ stages:
                     SourceSlot: ${{ parameters.slotName }}
                     SwapWithProduction: true
 
-                ${{ if ne(parameters.productionSmokeTestUrl, '') }}:
-                  - bash: |
-                      set -euo pipefail
-                      curl --fail --silent --show-error                         --retry 6                         --retry-delay 5                         "${{ parameters.productionSmokeTestUrl }}/api/health"
-                    displayName: Smoke test production
+                - bash: |
+                    set -euo pipefail
+                    curl --fail --silent --show-error --retry 6 --retry-delay 5 "${{ parameters.productionSmokeTestUrl }}/api/health"
+                  displayName: Smoke test production
