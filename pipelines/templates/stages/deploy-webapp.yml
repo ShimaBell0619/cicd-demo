@@ -18,6 +18,9 @@ parameters:
     type: string
   - name: expectedEnvironment
     type: string
+  - name: freshnessBranchRef
+    type: string
+    default: ''
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -26,7 +29,35 @@ stages:
     condition: succeeded()
     lockBehavior: sequential
     jobs:
+      - ${{ if ne(parameters.freshnessBranchRef, '') }}:
+          - job: FreshnessGuard
+            displayName: Confirm deployment source is still branch HEAD
+            pool:
+              name: build-ephemeral-linux
+            workspace:
+              clean: all
+            steps:
+              - checkout: self
+                clean: true
+                fetchDepth: 1
+                persistCredentials: true
+              - bash: |
+                  set -euo pipefail
+                  remote_head="$(git ls-remote origin "${FRESHNESS_BRANCH_REF}" | awk 'NR==1 {print $1}')"
+                  [[ "${remote_head}" == "${BUILD_SOURCEVERSION}" ]] || {
+                    echo "A newer branch commit exists. This stale run will not deploy." >&2
+                    echo "Run SHA: ${BUILD_SOURCEVERSION}" >&2
+                    echo "Branch HEAD: ${remote_head:-<missing>}" >&2
+                    exit 1
+                  }
+                env:
+                  FRESHNESS_BRANCH_REF: ${{ parameters.freshnessBranchRef }}
+                displayName: Verify remote branch HEAD
+
       - deployment: Deploy
+        ${{ if ne(parameters.freshnessBranchRef, '') }}:
+          dependsOn:
+            - FreshnessGuard
         environment: ${{ parameters.environmentName }}
         pool:
           name: deploy-selfhosted-linux

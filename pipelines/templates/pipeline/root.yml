@@ -70,45 +70,19 @@ stages:
                   nodeVersion: $(nodeVersion)
                   artifactName: $(artifactName)
 
-      - stage: Guard_DEV
-        displayName: Reject stale develop runs
-        dependsOn:
-          - Build_DEV
-        condition: succeeded()
-        jobs:
-          - job: Freshness
-            pool:
-              name: build-ephemeral-linux
-            workspace:
-              clean: all
-            steps:
-              - checkout: self
-                clean: true
-                fetchDepth: 1
-                persistCredentials: true
-              - bash: |
-                  set -euo pipefail
-                  remote_head="$(git ls-remote origin refs/heads/develop | awk 'NR==1 {print $1}')"
-                  [[ "${remote_head}" == "${BUILD_SOURCEVERSION}" ]] || {
-                    echo "A newer develop commit exists. This stale run will not deploy." >&2
-                    echo "Run SHA: ${BUILD_SOURCEVERSION}" >&2
-                    echo "develop HEAD: ${remote_head:-<missing>}" >&2
-                    exit 1
-                  }
-                displayName: Verify develop HEAD
-
       - template: ../stages/deploy-webapp.yml
         parameters:
           stageName: Deploy_DEV
           displayName: Deploy current develop artifact to DEV
           dependsOn:
-            - Guard_DEV
+            - Build_DEV
           environmentName: dev
           azureSubscription: REPLACE_WITH_DEV_SERVICE_CONNECTION
           appName: REPLACE_WITH_DEV_WEB_APP
           artifactName: $(artifactName)
           smokeTestUrl: https://REPLACE_WITH_DEV_HOST
           expectedEnvironment: dev
+          freshnessBranchRef: refs/heads/develop
 
   - ${{ if eq(parameters.mode, 'release') }}:
       - stage: Build_Release

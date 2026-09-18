@@ -3,11 +3,34 @@ parameters:
     type: number
   - name: ownerPrefix
     type: string
+  - name: runId
+    type: string
+    default: ''
+  - name: definitionId
+    type: string
+    default: ''
 
 steps:
   - bash: |
       set -euo pipefail
-      body="$(jq -n         --argjson days "${DAYS_VALID}"         --argjson definition "${SYSTEM_DEFINITIONID}"         --arg owner "${OWNER_PREFIX}-${BUILD_BUILDID}"         --argjson run "${BUILD_BUILDID}" '
+
+      target_run="${TARGET_RUN_ID:-${CURRENT_BUILD_ID}}"
+      target_definition="${TARGET_DEFINITION_ID:-${CURRENT_DEFINITION_ID}}"
+
+      [[ "${target_run}" =~ ^[0-9]+$ ]] || {
+        echo "Retention target run ID must be numeric: ${target_run}" >&2
+        exit 1
+      }
+      [[ "${target_definition}" =~ ^[0-9]+$ ]] || {
+        echo "Retention target definition ID must be numeric: ${target_definition}" >&2
+        exit 1
+      }
+
+      body="$(jq -n \
+        --argjson days "${DAYS_VALID}" \
+        --argjson definition "${target_definition}" \
+        --arg owner "${OWNER_PREFIX}-${target_run}" \
+        --argjson run "${target_run}" '
         [{
           daysValid: $days,
           definitionId: $definition,
@@ -16,14 +39,25 @@ steps:
           runId: $run
         }]
       ')"
-      curl         --fail-with-body         --silent         --show-error         --request POST         --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}"         --header "Content-Type: application/json"         --data "${body}"         "${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECTID}/_apis/build/retention/leases?api-version=7.1" |
+
+      curl \
+        --fail-with-body \
+        --silent \
+        --show-error \
+        --request POST \
+        --header "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+        --header "Content-Type: application/json" \
+        --data "${body}" \
+        "${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECTID}/_apis/build/retention/leases?api-version=7.1" |
         jq .
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       SYSTEM_COLLECTIONURI: $(System.CollectionUri)
       SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
-      SYSTEM_DEFINITIONID: $(System.DefinitionId)
-      BUILD_BUILDID: $(Build.BuildId)
+      CURRENT_DEFINITION_ID: $(System.DefinitionId)
+      CURRENT_BUILD_ID: $(Build.BuildId)
+      TARGET_RUN_ID: ${{ parameters.runId }}
+      TARGET_DEFINITION_ID: ${{ parameters.definitionId }}
       DAYS_VALID: ${{ parameters.daysValid }}
       OWNER_PREFIX: ${{ parameters.ownerPrefix }}
     displayName: Create ${{ parameters.daysValid }}-day retention lease

@@ -190,6 +190,8 @@ stages:
                 parameters:
                   daysValid: 3650
                   ownerPrefix: production-recovered
+                  runId: ${{ parameters.releaseRunId }}
+                  definitionId: ${{ parameters.releasePipelineDefinitionId }}
 
   - ${{ if eq(parameters.action, 'sync-dr') }}:
       - stage: Recovery_Sync_DR
