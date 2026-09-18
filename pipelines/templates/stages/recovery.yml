@@ -51,13 +51,22 @@ stages:
               case "${ACTION}" in
                 verify-production) ;;
                 tag-only|sync-dr)
-                  [[ "${RELEASE_RUN_ID}" =~ ^[0-9]+$ ]] || exit 1
+                  [[ "${RELEASE_RUN_ID}" =~ ^[0-9]+$ ]] || {
+                    echo "releaseRunId must be numeric." >&2
+                    exit 1
+                  }
                   ;;
                 reverse-swap)
-                  [[ "${RELEASE_RUN_ID}" =~ ^[0-9]+$ && "${ROLLBACK_RUN_ID}" =~ ^[0-9]+$ ]] || exit 1
+                  [[ "${RELEASE_RUN_ID}" =~ ^[0-9]+$ && "${ROLLBACK_RUN_ID}" =~ ^[0-9]+$ ]] || {
+                    echo "releaseRunId and rollbackRunId must be numeric." >&2
+                    exit 1
+                  }
                   ;;
                 redeploy-production)
-                  [[ "${ROLLBACK_RUN_ID}" =~ ^[0-9]+$ ]] || exit 1
+                  [[ "${ROLLBACK_RUN_ID}" =~ ^[0-9]+$ ]] || {
+                    echo "rollbackRunId must be numeric." >&2
+                    exit 1
+                  }
                   ;;
                 *) exit 1 ;;
               esac
@@ -83,10 +92,18 @@ stages:
                     - checkout: none
                     - bash: |
                         set -euo pipefail
-                        curl --fail --silent --show-error "${PRODUCTION_URL}/api/health" | jq .
+                        curl --fail --silent --show-error "${PRODUCTION_URL}/api/health" |
+                          jq -e '
+                            type == "object"
+                            and .status == "ok"
+                            and .environment == "prod"
+                            and (.version | type == "string")
+                            and (.commitSha | type == "string")
+                            and (.buildId | type == "string")
+                          '
                       env:
                         PRODUCTION_URL: ${{ parameters.productionUrl }}
-                      displayName: Show current PROD identity
+                      displayName: Show strict current PROD identity
 
   - ${{ if eq(parameters.action, 'tag-only') }}:
       - stage: Recovery_Tag
@@ -114,11 +131,16 @@ stages:
                     - bash: |
                         set -euo pipefail
                         m="$(Pipeline.Workspace)/recovery-artifact/release-manifest.json"
-                        echo "##vso[task.setvariable variable=recoveryCommit;isOutput=true]$(jq -r '.commitSha' "${m}")"
-                        echo "##vso[task.setvariable variable=recoveryBuild;isOutput=true]$(jq -r '.pipelineBuildId' "${m}")"
-                        echo "##vso[task.setvariable variable=recoveryVersion;isOutput=true]$(jq -r '.artifactVersion' "${m}")"
-                      name: ArtifactIdentity
+                        echo "##vso[task.setvariable variable=recoveryCommit]$(jq -r '.commitSha' "${m}")"
+                        echo "##vso[task.setvariable variable=recoveryBuild]$(jq -r '.pipelineBuildId' "${m}")"
+                        echo "##vso[task.setvariable variable=recoveryVersion]$(jq -r '.artifactVersion' "${m}")"
                       displayName: Read retained artifact identity
+                    - template: ../steps/verify-artifact.yml
+                      parameters:
+                        artifactDirectory: $(Pipeline.Workspace)/recovery-artifact
+                        expectedCommitSha: $(recoveryCommit)
+                        expectedBuildId: ${{ parameters.releaseRunId }}
+                        expectedVersion: $(recoveryVersion)
                     - template: ../steps/smoke-test.yml
                       parameters:
                         url: ${{ parameters.productionUrl }}
@@ -132,10 +154,6 @@ stages:
             dependsOn: VerifyProduction
             pool:
               name: release-control-linux
-            variables:
-              recoveryCommit: $[ dependencies.VerifyProduction.outputs['VerifyProduction.ArtifactIdentity.recoveryCommit'] ]
-              recoveryBuild: $[ dependencies.VerifyProduction.outputs['VerifyProduction.ArtifactIdentity.recoveryBuild'] ]
-              recoveryVersion: $[ dependencies.VerifyProduction.outputs['VerifyProduction.ArtifactIdentity.recoveryVersion'] ]
             steps:
               - checkout: none
               - task: DownloadPipelineArtifact@2
@@ -150,8 +168,17 @@ stages:
               - bash: |
                   set -euo pipefail
                   m="$(Pipeline.Workspace)/recovery-artifact/release-manifest.json"
+                  echo "##vso[task.setvariable variable=recoveryCommit]$(jq -r '.commitSha' "${m}")"
+                  echo "##vso[task.setvariable variable=recoveryBuild]$(jq -r '.pipelineBuildId' "${m}")"
+                  echo "##vso[task.setvariable variable=recoveryVersion]$(jq -r '.artifactVersion' "${m}")"
                   echo "##vso[task.setvariable variable=recoveryZipSha]$(jq -r '.webAppSha256' "${m}")"
-                displayName: Read retained ZIP digest
+                displayName: Read retained tag metadata
+              - template: ../steps/verify-artifact.yml
+                parameters:
+                  artifactDirectory: $(Pipeline.Workspace)/recovery-artifact
+                  expectedCommitSha: $(recoveryCommit)
+                  expectedBuildId: ${{ parameters.releaseRunId }}
+                  expectedVersion: $(recoveryVersion)
               - template: ../steps/create-release-tag.yml
                 parameters:
                   azureDevOpsServiceConnection: ${{ parameters.tagAzureDevOpsServiceConnection }}
@@ -169,7 +196,7 @@ stages:
         dependsOn: Recovery_Guard
         lockBehavior: sequential
         jobs:
-          - deployment: VerifyAndSync
+          - deployment: VerifyProduction
             environment: ${{ parameters.prodEnvironmentName }}
             pool:
               name: deploy-selfhosted-linux
@@ -194,6 +221,12 @@ stages:
                         echo "##vso[task.setvariable variable=recoveryBuild]$(jq -r '.pipelineBuildId' "${m}")"
                         echo "##vso[task.setvariable variable=recoveryVersion]$(jq -r '.artifactVersion' "${m}")"
                       displayName: Read retained artifact identity
+                    - template: ../steps/verify-artifact.yml
+                      parameters:
+                        artifactDirectory: $(Pipeline.Workspace)/recovery-artifact
+                        expectedCommitSha: $(recoveryCommit)
+                        expectedBuildId: ${{ parameters.releaseRunId }}
+                        expectedVersion: $(recoveryVersion)
                     - template: ../steps/smoke-test.yml
                       parameters:
                         url: ${{ parameters.productionUrl }}
@@ -202,6 +235,39 @@ stages:
                         expectedBuildId: $(recoveryBuild)
                         expectedVersion: $(recoveryVersion)
                         displayName: Prove selected artifact is current PROD
+
+          - deployment: SyncDR
+            dependsOn: VerifyProduction
+            environment: ${{ parameters.drEnvironmentName }}
+            pool:
+              name: deploy-selfhosted-linux
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - checkout: none
+                    - task: DownloadPipelineArtifact@2
+                      inputs:
+                        buildType: specific
+                        project: $(System.TeamProject)
+                        definition: ${{ parameters.releasePipelineDefinitionId }}
+                        buildVersionToDownload: specific
+                        pipelineId: ${{ parameters.releaseRunId }}
+                        artifactName: ${{ parameters.artifactName }}
+                        targetPath: $(Pipeline.Workspace)/recovery-artifact
+                    - bash: |
+                        set -euo pipefail
+                        m="$(Pipeline.Workspace)/recovery-artifact/release-manifest.json"
+                        echo "##vso[task.setvariable variable=recoveryCommit]$(jq -r '.commitSha' "${m}")"
+                        echo "##vso[task.setvariable variable=recoveryBuild]$(jq -r '.pipelineBuildId' "${m}")"
+                        echo "##vso[task.setvariable variable=recoveryVersion]$(jq -r '.artifactVersion' "${m}")"
+                      displayName: Read retained artifact identity
+                    - template: ../steps/verify-artifact.yml
+                      parameters:
+                        artifactDirectory: $(Pipeline.Workspace)/recovery-artifact
+                        expectedCommitSha: $(recoveryCommit)
+                        expectedBuildId: ${{ parameters.releaseRunId }}
+                        expectedVersion: $(recoveryVersion)
                     - task: AzureWebApp@1
                       inputs:
                         azureSubscription: ${{ parameters.drAzureSubscription }}
@@ -263,6 +329,18 @@ stages:
                         echo "##vso[task.setvariable variable=rollbackBuild]$(jq -r '.pipelineBuildId' "${r}")"
                         echo "##vso[task.setvariable variable=rollbackVersion]$(jq -r '.artifactVersion' "${r}")"
                       displayName: Read both retained identities
+                    - template: ../steps/verify-artifact.yml
+                      parameters:
+                        artifactDirectory: $(Pipeline.Workspace)/current-artifact
+                        expectedCommitSha: $(currentCommit)
+                        expectedBuildId: ${{ parameters.releaseRunId }}
+                        expectedVersion: $(currentVersion)
+                    - template: ../steps/verify-artifact.yml
+                      parameters:
+                        artifactDirectory: $(Pipeline.Workspace)/rollback-artifact
+                        expectedCommitSha: $(rollbackCommit)
+                        expectedBuildId: ${{ parameters.rollbackRunId }}
+                        expectedVersion: $(rollbackVersion)
                     - template: ../steps/smoke-test.yml
                       parameters:
                         url: ${{ parameters.productionUrl }}
@@ -331,7 +409,7 @@ stages:
                       parameters:
                         artifactDirectory: $(Pipeline.Workspace)/rollback-artifact
                         expectedCommitSha: $(rollbackCommit)
-                        expectedBuildId: $(rollbackBuild)
+                        expectedBuildId: ${{ parameters.rollbackRunId }}
                         expectedVersion: $(rollbackVersion)
                     - task: AzureWebApp@1
                       inputs:
