@@ -94,8 +94,8 @@ stages:
       resourceGroupName: REPLACE_WITH_PROD_RESOURCE_GROUP
       artifactName: $(artifactName)
       slotName: staging
-      stagingSmokeTestUrl: ''
-      productionSmokeTestUrl: ''
+      stagingSmokeTestUrl: https://REPLACE_WITH_PROD_STAGING_HOST
+      productionSmokeTestUrl: https://REPLACE_WITH_PROD_HOST
 
   - template: templates/stages/deploy-webapp.yml
     parameters:
