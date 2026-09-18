@@ -14,25 +14,32 @@ steps:
       version: ${{ parameters.nodeVersion }}
       checkLatest: false
 
+  - bash: |
+      set -euo pipefail
+      if [[ ! -f package-lock.json ]]; then
+        echo "package-lock.json is required. Generate and commit it before running CI." >&2
+        exit 1
+      fi
+    displayName: Require committed npm lockfile
+
   - task: Cache@2
     displayName: Restore npm cache
     inputs:
-      key: 'npm | "$(Agent.OS)" | package.json'
+      key: 'npm | "$(Agent.OS)" | package-lock.json'
       restoreKeys: |
         npm | "$(Agent.OS)"
       path: $(Pipeline.Workspace)/.npm
 
   - bash: |
       set -euo pipefail
-      npm install --cache "$(Pipeline.Workspace)/.npm" --prefer-offline --no-audit --no-fund
-    displayName: Install dependencies
+      npm ci         --include=dev         --cache "$(Pipeline.Workspace)/.npm"         --prefer-offline         --no-audit         --no-fund
+    displayName: Install locked dependencies
 
   - task: Cache@2
     displayName: Restore Next.js build cache
     inputs:
-      key: 'next | "$(Agent.OS)" | package.json | "$(Build.SourceVersion)"'
+      key: 'next | "$(Agent.OS)" | package-lock.json'
       restoreKeys: |
-        next | "$(Agent.OS)" | package.json
         next | "$(Agent.OS)"
       path: $(Build.SourcesDirectory)/.next/cache
 
@@ -43,10 +50,9 @@ steps:
 
   - bash: |
       set -euo pipefail
-
       mkdir -p "$(Build.ArtifactStagingDirectory)"
 
-      npx --yes @cyclonedx/cyclonedx-npm@6.0.1         --omit dev         --output-reproducible         --validate         --output-format JSON         --output-file "$(Build.ArtifactStagingDirectory)/sbom.cdx.json"
+      ./node_modules/.bin/cyclonedx-npm         --omit dev         --output-reproducible         --validate         --output-format JSON         --output-file "$(Build.ArtifactStagingDirectory)/sbom.cdx.json"
     displayName: Generate CycloneDX SBOM
 
   - bash: |

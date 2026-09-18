@@ -1,91 +1,186 @@
 # Azure Pipelines setup
 
-This is the first tabletop implementation. It is intentionally small enough to review before the .NET repositories adopt the same lifecycle.
+This repository is a tabletop implementation of the Node.js / Next.js delivery model before the .NET repositories adopt the same lifecycle.
 
-The **production assumption is Azure Repos Git + Azure Pipelines**. This GitHub repository is only a convenient working mirror for developing the demo in chat.
+The **production assumption is Azure Repos Git + Azure Pipelines**. This GitHub repository is only a working mirror used while developing the demo in chat.
 
-## Pipelines to create
+## Pipeline model
 
-Create two Azure Pipelines against this GitHub repository:
+Create two Azure Pipelines:
 
-| Pipeline | YAML path | Purpose |
-| --- | --- | --- |
-| CI | `pipelines/azure-pipelines-ci.yml` | PR validation and automatic DEV deployment from `develop` |
-| Release | `pipelines/azure-pipelines-release.yml` | Build once and promote `release/*` / `hotfix/*` through four environments |
+| Pipeline | YAML path | Trigger | Purpose |
+| --- | --- | --- | --- |
+| CI | `pipelines/azure-pipelines-ci.yml` | Automatic on `develop`, `release/*`, `hotfix/*`; Branch Policy for PRs | Build validation and automatic DEV deployment from `develop` |
+| Release | `pipelines/azure-pipelines-release.yml` | **Manual only** | Build once and promote an explicitly selected `release/*` or `hotfix/*` branch |
+
+The release pipeline is deliberately not triggered by branch creation or push. Creating `release/1.2.3` or `hotfix/1.2.4` means "work on this release"; manually queuing the Release Pipeline means "promote this branch as a release candidate."
 
 ## Required Azure DevOps resources
 
-1. An Azure Repos Git repository containing this code.
-2. Self-hosted agent pool named `self-hosted-linux`.
+1. Azure Repos Git repository containing this code.
+2. Self-hosted Linux agent pool named `self-hosted-linux`.
 3. Azure DevOps Environments: `dev`, `uat`, `prod`, `dr`.
-4. Configure a manual approval check on the `prod` Environment.
-5. Azure Resource Manager service connections for the target environments.
-6. Four Linux App Services. PROD additionally has a `staging` deployment slot.
+4. Manual Approval check configured on the `prod` Environment.
+5. Azure Resource Manager service connections for each target environment.
+6. Four Linux App Services; PROD additionally has a `staging` deployment slot.
+7. The project Build Service identity must be able to read the repo and create Git tags. The pipeline uses `checkout: persistCredentials: true` only in the release-finalization job.
 
-Replace every `REPLACE_WITH_...` value in the two pipeline entrypoint files.
+Replace every `REPLACE_WITH_...` value before attempting an Azure deployment.
 
-Approval is intentionally configured on the Azure DevOps Environment rather than in YAML. This keeps the production gate outside the repository-controlled pipeline definition.
+## Git Flow
 
-## Current Git Flow behavior
-
-### Normal development
+### Feature development
 
 ```text
-feature/* -> PR -> develop
-                    |
-                    +-> CI build / SBOM
-                    +-> automatic DEV deployment
+feature/*
+  -> local development
+  -> PR to develop
+  -> Branch Policy Build Validation
+  -> review
+  -> merge to develop
+  -> CI Pipeline
+  -> DEV
 ```
 
-### Release
+Feature branches do not automatically deploy to the shared DEV environment. A developer can manually run the CI Pipeline against a feature branch to validate the build, but the DEV deployment stage is guarded so that only `develop` deploys there.
+
+### Normal release
 
 ```text
 develop
   -> release/1.2.3
-       -> Release Pipeline
-          -> Build once
-          -> DEV
-          -> UAT
-          -> PROD staging
-          -> staging smoke test
-          -> slot swap
-          -> production smoke test
-          -> DR
+  -> fixes / CI until ready
+  -> prepare and review PR to main
+  -> manually Run Release Pipeline on release/1.2.3
+       -> Build once
+       -> DEV
+       -> UAT
+       -> pause
+       -> accept UAT
+       -> complete release/1.2.3 -> main PR using Basic merge
+       -> resume same Pipeline Run
+       -> verify release SHA is contained in main
+       -> create tag v1.2.3 on that exact SHA
+       -> PROD Environment approval
+       -> PROD staging
+       -> staging smoke test
+       -> slot swap
+       -> production smoke test
+       -> DR
 ```
 
 ### Hotfix
 
-A hotfix starts from the currently released `main` commit:
-
 ```text
 main
   -> hotfix/1.2.4
-       -> same Release Pipeline
-       -> merge back to main and develop after release
+  -> implement fix
+  -> CI
+  -> PR to main + review + Build Validation
+  -> manually Run the same Release Pipeline on hotfix/1.2.4
+       -> Build once
+       -> DEV
+       -> UAT
+       -> pause
+       -> complete PR to main using Basic merge
+       -> resume
+       -> create v1.2.4 on the exact hotfix SHA
+       -> PROD approval
+       -> PROD
+       -> DR
+  -> after release, merge the fix back into develop through a PR
 ```
 
-## Version tagging: first-iteration decision
+The normal release and hotfix use the same Release Pipeline. Their main differences are the source branch and the post-release need to bring a hotfix back into `develop`.
 
-The release branch name must be exactly `release/X.Y.Z` or `hotfix/X.Y.Z`.
+## Why Basic merge is required for main
 
-The pipeline extracts `X.Y.Z` and records it in the build number and release manifest.
+The UAT-tested artifact is tied to `Build.SourceVersion`. The Release Pipeline checks that this exact source commit is an ancestor of `origin/main` before tagging.
 
-Creating the immutable Git tag `vX.Y.Z` after UAT acceptance is **not automated yet**. That requires an explicit design for GitHub write credentials and the exact point at which main is updated. We will add it after the basic pipeline lifecycle is reviewed.
+A squash or rebase merge creates different commit identities. Configure the `main` branch policy to allow the release/hotfix process to use **Basic merge (no fast-forward)** so the tested source SHA remains in main history.
 
-## Caching
+## Azure Repos PR validation
 
-The build template uses two caches:
+Azure Repos Git does not support YAML PR triggers. Configure **Branch Policies > Build validation** on at least:
 
-- npm's download cache at `$(Pipeline.Workspace)/.npm`
-- Next.js incremental build cache at `.next/cache`
+- `develop`: required CI validation before feature integration.
+- `main`: required CI validation before release/hotfix integration.
 
-It deliberately does not cache `node_modules`.
+PR review requirements, minimum reviewers, comment resolution, and allowed merge types should also be configured as branch policies rather than encoded in YAML.
 
-The repository currently has no committed `package-lock.json`; `npm install` creates it during the build so the demo can be bootstrapped without a local npm execution environment. Before treating this as a production baseline, commit the generated lockfile and switch the install step to `npm ci`. That is the first known hardening item.
+## Manual Release Pipeline start
+
+The Release Pipeline uses:
+
+```yaml
+trigger: none
+pr: none
+```
+
+Start it from **Run pipeline**, explicitly select `release/X.Y.Z` or `hotfix/X.Y.Z`, and run it. The first stage rejects any other branch or malformed version.
+
+Branch names intentionally omit the `v` prefix:
+
+- branch: `release/1.2.3`
+- branch: `hotfix/1.2.4`
+- immutable version tag: `v1.2.3`, `v1.2.4`
+
+## One Release Pipeline Run
+
+A single queued Release Pipeline Run owns the immutable artifact and remains the same run through the whole promotion:
+
+```text
+Build
+ -> DEV
+ -> UAT
+ -> ManualValidation (UAT accepted + main PR merged)
+ -> main ancestry verification
+ -> vX.Y.Z tag
+ -> PROD Environment Approval
+ -> PROD staging / smoke / swap / smoke
+ -> DR
+```
+
+The `ManualValidation@1` job is agentless and pauses the existing run rather than starting another pipeline.
+
+## Production approval
+
+Production approval is intentionally configured as an **Approvals and checks** rule on the Azure DevOps `prod` Environment, not inside repository YAML. Repository contributors therefore cannot remove the production gate by editing the pipeline file alone.
+
+## Manual DEV redeployment
+
+Normal behavior:
+
+```text
+merge/push to develop -> CI -> DEV
+```
+
+For a retry or deliberate redeployment, manually run the CI Pipeline and select `develop`. Running the CI Pipeline manually against another branch performs the build but does not deploy that branch to shared DEV.
+
+## Dependency reproducibility and cache
+
+A committed `package-lock.json` is mandatory. The build fails immediately when it is missing.
+
+The template uses:
+
+- `npm ci` for deterministic dependency installation.
+- npm download cache: `$(Pipeline.Workspace)/.npm`.
+- Next.js incremental cache: `.next/cache`.
+- no `node_modules` cache.
+
+`@cyclonedx/cyclonedx-npm` is a pinned dev dependency so SBOM generation does not download an arbitrary tool version during the build.
+
+**Current tabletop limitation:** this working mirror does not yet contain `package-lock.json`. The current execution environment cannot reach the npm registry, so a valid lockfile was not fabricated. Generate it once from this committed `package.json` in a Node 22 environment, review it, and commit it before the first CI execution:
+
+```bash
+npm install --package-lock-only
+```
+
+After that, CI uses only `npm ci`.
 
 ## Artifact contents
 
-Each release pipeline run publishes one Pipeline Artifact named `webapp`:
+Each Release Pipeline Run publishes one Pipeline Artifact named `webapp`:
 
 ```text
 webapp.zip
@@ -94,38 +189,21 @@ sbom.cdx.json
 release-manifest.json
 ```
 
-All deployments download that same artifact and verify its SHA-256 checksum before deployment.
+DEV, UAT, PROD, and DR download that same artifact and verify its SHA-256 checksum before deployment. No environment rebuild occurs.
 
-The Next.js application uses `output: "standalone"`, so `webapp.zip` contains the prebuilt server rather than rebuilding on App Service.
+The Next.js application uses `output: "standalone"`, so `webapp.zip` contains the prebuilt server.
 
-## Smoke tests
+## Smoke tests and Private Endpoint
 
-The reusable templates support `/api/health` smoke tests.
+The reusable templates support `/api/health`.
 
-- DEV/UAT/DR smoke tests are optional in the first iteration because their actual private URLs are not known yet.
-- PROD staging and production smoke tests are mandatory. The release entrypoint currently contains `REPLACE_WITH_...` URL placeholders so an unconfigured pipeline fails before a successful production rollout instead of silently skipping verification.
+- DEV/UAT/DR smoke-test URLs are optional until their real private names are defined.
+- PROD staging and production smoke tests are mandatory and use explicit placeholders so an unconfigured release cannot silently swap.
 
-For a Private Endpoint-only App Service, the self-hosted agent must have network/DNS reachability to those endpoints.
+For Private Endpoint-only App Service, the self-hosted agent must have routing and DNS resolution to the production and staging private endpoints.
 
+## Tag permissions
 
-## Azure Repos PR validation
+The finalization job uses `persistCredentials: true` so Git commands can reuse the Azure Pipelines OAuth credential. Grant the project Build Service identity only the repository permissions needed for this action, especially **Read** and **Create tag**. Do not grant branch-policy bypass for this design.
 
-Azure Repos Git does not use the YAML `pr:` trigger for pull-request validation.
-
-Configure **Branch Policies > Build validation** on at least `develop` and `main`, pointing to the CI pipeline. Use an automatic, required validation policy for the protected branches.
-
-The YAML therefore explicitly uses `pr: none`; PR validation is an Azure Repos branch-policy concern.
-
-## Manual DEV deployment
-
-The normal path remains automatic:
-
-```text
-push/merge to develop
-  -> CI pipeline
-  -> DEV
-```
-
-A manual DEV redeployment is also available without another pipeline: use **Run pipeline**, select the `develop` branch, and run the same CI pipeline. Because the DEV stage is conditioned on `refs/heads/develop`, manually running another branch builds it but does not overwrite the shared DEV environment.
-
-This manual path is intended for retries or deliberate redeployment, not as the default delivery mechanism.
+The tag job is idempotent: if `vX.Y.Z` already exists on the expected source SHA, it succeeds; if the tag exists on a different SHA, it fails.

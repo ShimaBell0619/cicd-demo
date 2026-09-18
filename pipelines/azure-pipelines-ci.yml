@@ -4,9 +4,11 @@ trigger:
   branches:
     include:
       - develop
+      - release/*
+      - hotfix/*
 
 # Azure Repos Git does not support YAML PR triggers.
-# Configure this pipeline as a required Build Validation branch policy instead.
+# Configure this pipeline as required Build Validation on protected branches.
 pr: none
 
 pool:
