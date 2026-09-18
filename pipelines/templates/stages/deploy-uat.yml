@@ -6,9 +6,6 @@ parameters:
   - name: dependsOn
     type: object
     default: []
-  - name: condition
-    type: string
-    default: succeeded()
   - name: environmentName
     type: string
   - name: azureSubscription
@@ -19,17 +16,19 @@ parameters:
     type: string
   - name: smokeTestUrl
     type: string
+  - name: approvers
+    type: string
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: ${{ parameters.displayName }}
     dependsOn: ${{ parameters.dependsOn }}
-    condition: ${{ parameters.condition }}
+    condition: succeeded()
     lockBehavior: sequential
 
     jobs:
-      - deployment: Deploy
-        displayName: Deploy ${{ parameters.environmentName }}
+      - deployment: DeployUAT
+        displayName: Deploy UAT
         environment: ${{ parameters.environmentName }}
         pool:
           name: deploy-selfhosted-linux
@@ -43,7 +42,6 @@ stages:
 
                 - download: current
                   artifact: ${{ parameters.artifactName }}
-                  displayName: Download release artifact
 
                 - template: ../steps/verify-artifact.yml
                   parameters:
@@ -62,4 +60,31 @@ stages:
                 - template: ../steps/smoke-test.yml
                   parameters:
                     url: ${{ parameters.smokeTestUrl }}
-                    displayName: Smoke test ${{ parameters.environmentName }}
+                    displayName: Verify UAT artifact identity
+
+      - job: UATAcceptance
+        displayName: UAT acceptance and main merge
+        dependsOn:
+          - DeployUAT
+        pool: server
+        timeoutInMinutes: 10080
+        steps:
+          - task: ManualValidation@1
+            timeoutInMinutes: 8640
+            inputs:
+              notifyUsers: ${{ parameters.approvers }}
+              approvers: ${{ parameters.approvers }}
+              allowApproversToApproveTheirOwnRuns: false
+              instructions: |
+                Confirm UAT for:
+                  Version branch: $(Build.SourceBranch)
+                  Candidate SHA: $(Build.SourceVersion)
+                  Pipeline run: $(Build.BuildId)
+
+                Before resuming:
+                1. Confirm UAT passed for this exact candidate.
+                2. Complete release/hotfix -> main using Basic merge (no squash/rebase).
+                3. Do not add commits to the release/hotfix branch after this build.
+                4. Resume this same run only after the PR is merged.
+              onTimeout: reject
+            displayName: Accept UAT and confirm main merge

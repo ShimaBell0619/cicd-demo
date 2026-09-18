@@ -1,59 +1,47 @@
 # cicd-demo
 
-Azure Pipelines CI/CD demo repository.
+Azure Pipelines CI/CD demo for a Node.js / Next.js App Service workload.
 
-The first implementation focuses on a **Node.js / Next.js Web App**. The .NET Functions API and batch repositories are expected to follow the same lifecycle later.
+The production target is **Azure Repos Git + Azure Pipelines**. This GitHub repository is only the working mirror used to iterate on the design.
 
-The production target is **Azure Repos Git + Azure Pipelines**. This GitHub repository is the working mirror used to develop and review the demo.
-
-## Target lifecycle
+## Delivery model
 
 ```text
 feature/*
-   |
-   | PR / Build Validation
-   v
-develop -----------------------> CI Pipeline
-   |                              Build / SBOM
-   |                              |
-   |                              v
-   |                             DEV
-   |
-   +--> release/X.Y.Z
-   |        |
-   |        | manual Run Pipeline
-   |        v
-   |     Release Pipeline Run
-   |        |
-   |        +--> Build once
-   |        +--> DEV
-   |        +--> UAT
-   |        +--> pause for UAT acceptance + main merge
-   |        +--> verify main / tag vX.Y.Z
-   |        +--> PROD approval
-   |        +--> PROD staging -> smoke -> swap -> smoke
-   |        +--> DR
-   |
-main <-------------------------- release history
-   |
-   +--> hotfix/X.Y.Z ----------> same manual Release Pipeline
+  -> PR / Build Validation
+  -> develop
+  -> CI
+  -> DEV
+
+release/X.Y.Z or hotfix/X.Y.Z
+  -> explicit manual Release Pipeline start
+  -> Build once
+  -> DEV
+  -> UAT + human acceptance
+  -> Basic merge into main
+  -> artifact retention
+  -> stale-candidate / current-PROD guard
+  -> PROD staging
+  -> identity smoke
+  -> swap
+  -> PROD identity smoke
+  -> vX.Y.Z
+  -> DR
 ```
 
-Release/hotfix branch creation does **not** start a deployment. CI continues to validate those branches automatically; a person explicitly starts the Release Pipeline when the branch is ready to become a release candidate.
+Key properties:
 
-The release artifact is built once and promoted unchanged through DEV, UAT, PROD, and DR.
+- release/hotfix branch creation does not deploy anything,
+- unreviewed PR code and deployment jobs use separate self-hosted hosts/pools,
+- DEV/UAT/PROD/DR receive the same immutable ZIP,
+- checksums are verified from the downloaded Pipeline Artifact,
+- health checks verify the actual commit SHA and Pipeline Build ID,
+- UAT is protected against concurrent overwrite while ManualValidation is active,
+- a stale release cannot overwrite a newer production hotfix,
+- the version tag is created only after production verification,
+- successful release artifacts receive a long retention lease,
+- PROD Service Connection protection is required in addition to Environment approval.
 
-## Repository structure
-
-```text
-app/                              Minimal Next.js application
-pipelines/
-  azure-pipelines-ci.yml          CI / PR validation target / DEV deployment
-  azure-pipelines-release.yml     Manual release and hotfix promotion pipeline
-  templates/
-    steps/node-build.yml          npm ci, caches, build, SBOM, package
-    stages/deploy-webapp.yml      Reusable App Service deployment stage
-    stages/deploy-prod.yml        PROD staging deploy, smoke test, swap
-```
-
-See [pipelines/README.md](pipelines/README.md) for the full Azure DevOps setup, Git Flow, permissions, and current tabletop limitation around generating the initial `package-lock.json`.
+See:
+- [Pipeline implementation](pipelines/README.md)
+- [Required Azure DevOps protected-resource controls](docs/azure-devops-controls.md)

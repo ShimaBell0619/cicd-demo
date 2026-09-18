@@ -7,12 +7,8 @@ trigger:
       - release/*
       - hotfix/*
 
-# Azure Repos Git does not support YAML PR triggers.
-# Configure this pipeline as required Build Validation on protected branches.
+# Azure Repos Git: PR validation is configured by Branch Policy > Build validation.
 pr: none
-
-pool:
-  name: self-hosted-linux
 
 variables:
   nodeVersion: '22.x'
@@ -24,6 +20,10 @@ stages:
     jobs:
       - job: Build
         displayName: Build Next.js
+        pool:
+          name: ci-selfhosted-linux
+        workspace:
+          clean: all
         steps:
           - checkout: self
             clean: true
@@ -43,6 +43,5 @@ stages:
       environmentName: dev
       azureSubscription: REPLACE_WITH_DEV_SERVICE_CONNECTION
       appName: REPLACE_WITH_DEV_WEB_APP
-      resourceGroupName: REPLACE_WITH_DEV_RESOURCE_GROUP
       artifactName: $(artifactName)
-      smokeTestUrl: ''
+      smokeTestUrl: https://REPLACE_WITH_DEV_HOST

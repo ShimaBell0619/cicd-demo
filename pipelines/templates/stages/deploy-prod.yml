@@ -23,17 +23,139 @@ parameters:
     type: string
   - name: productionSmokeTestUrl
     type: string
+  - name: initialProductionRelease
+    type: boolean
+    default: false
 
 stages:
   - stage: ${{ parameters.stageName }}
     displayName: ${{ parameters.displayName }}
     dependsOn: ${{ parameters.dependsOn }}
     condition: succeeded()
+    lockBehavior: sequential
 
     jobs:
+      - job: ReleaseGuard
+        displayName: Reject stale or unsafe release candidates
+        pool:
+          name: release-selfhosted-linux
+        workspace:
+          clean: all
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+            persistCredentials: true
+
+          - bash: |
+              set -euo pipefail
+
+              branch="${BUILD_SOURCEBRANCH#refs/heads/}"
+              version="${branch#*/}"
+              source_sha="${BUILD_SOURCEVERSION}"
+              tag="v${version}"
+
+              if [[ ! "${branch}" =~ ^(release|hotfix)/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "Unexpected source branch ${branch}." >&2
+                exit 1
+              fi
+
+              remote_head="$(git ls-remote origin "refs/heads/${branch}" | awk 'NR==1 {print $1}')"
+              if [[ "${remote_head}" != "${source_sha}" ]]; then
+                echo "Candidate branch changed after Build/UAT." >&2
+                echo "UAT SHA: ${source_sha}" >&2
+                echo "Current remote head: ${remote_head:-<missing>}" >&2
+                echo "Create a new Release Pipeline run and repeat UAT." >&2
+                exit 1
+              fi
+
+              git fetch origin main --tags
+
+              if ! git merge-base --is-ancestor "${source_sha}" origin/main; then
+                echo "UAT candidate SHA is not contained in main." >&2
+                exit 1
+              fi
+
+              merge_line="$(git rev-list --merges --parents origin/main | grep -m1 -E "^[0-9a-f]+( [0-9a-f]+)* ${source_sha}( |$)" || true)"
+              if [[ -z "${merge_line}" ]]; then
+                echo "Could not find a Basic merge commit in main with candidate SHA as a parent." >&2
+                exit 1
+              fi
+
+              merge_commit="$(awk '{print $1}' <<< "${merge_line}")"
+              source_tree="$(git rev-parse "${source_sha}^{tree}")"
+              merge_tree="$(git rev-parse "${merge_commit}^{tree}")"
+
+              if [[ "${source_tree}" != "${merge_tree}" ]]; then
+                echo "main merge tree differs from UAT candidate tree." >&2
+                echo "This indicates concurrent main changes or conflict-resolution changes were not in UAT." >&2
+                echo "Incorporate the changes into the release candidate and repeat Build/UAT." >&2
+                exit 1
+              fi
+
+              remote_tag="$(git ls-remote origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
+              if [[ -n "${remote_tag}" ]]; then
+                echo "Version tag ${tag} already exists remotely. Refusing duplicate release." >&2
+                exit 1
+              fi
+
+              health_file="${AGENT_TEMPDIRECTORY}/current-production.json"
+              http_code="$(curl                 --silent                 --show-error                 --connect-timeout 10                 --max-time 30                 --output "${health_file}"                 --write-out '%{http_code}'                 "${PRODUCTION_URL}/api/health" || true)"
+
+              current_prod_sha=""
+              if [[ "${http_code}" == "200" ]]; then
+                current_prod_sha="$(sed -nE 's/.*"commitSha"[[:space:]]*:[[:space:]]*"([0-9a-f]{40})".*/\1/p' "${health_file}" | head -n1)"
+              fi
+
+              if [[ -n "${current_prod_sha}" ]]; then
+                if [[ "${current_prod_sha}" == "${source_sha}" ]]; then
+                  echo "Candidate SHA is already running in production. Do not rerun PROD deployment." >&2
+                  exit 1
+                fi
+
+                if ! git cat-file -e "${current_prod_sha}^{commit}" 2>/dev/null; then
+                  git fetch origin "${current_prod_sha}" || true
+                fi
+
+                if ! git cat-file -e "${current_prod_sha}^{commit}" 2>/dev/null; then
+                  echo "Current production SHA ${current_prod_sha} is not available in repository history." >&2
+                  exit 1
+                fi
+
+                if ! git merge-base --is-ancestor "${current_prod_sha}" "${source_sha}"; then
+                  echo "Release candidate does not contain current production SHA ${current_prod_sha}." >&2
+                  echo "A newer hotfix/release would be reverted. Refresh the candidate and repeat UAT." >&2
+                  exit 1
+                fi
+              else
+                if [[ "${INITIAL_RELEASE}" != "true" ]]; then
+                  echo "Could not identify current production artifact. Refusing release." >&2
+                  echo "Use initialProductionRelease=true only for the first production deployment." >&2
+                  exit 1
+                fi
+
+                existing_release_tag="$(git tag --list 'v[0-9]*' | head -n1)"
+                if [[ -n "${existing_release_tag}" ]]; then
+                  echo "Version tags already exist; initialProductionRelease cannot bypass production identity checks." >&2
+                  exit 1
+                fi
+              fi
+
+              echo "Release freshness checks passed."
+            displayName: Verify candidate, main merge, tag, and current production ancestry
+            env:
+              PRODUCTION_URL: ${{ parameters.productionSmokeTestUrl }}
+              INITIAL_RELEASE: ${{ lower(parameters.initialProductionRelease) }}
+
       - deployment: DeployProduction
-        displayName: Deploy and swap production
+        displayName: Deploy staging, verify, swap, verify production
+        dependsOn:
+          - ReleaseGuard
         environment: ${{ parameters.environmentName }}
+        pool:
+          name: deploy-selfhosted-linux
+        workspace:
+          clean: all
         strategy:
           runOnce:
             deploy:
@@ -42,13 +164,10 @@ stages:
 
                 - download: current
                   artifact: ${{ parameters.artifactName }}
-                  displayName: Download release artifact
 
-                - bash: |
-                    set -euo pipefail
-                    cd "$(Pipeline.Workspace)/${{ parameters.artifactName }}"
-                    sha256sum --check webapp.zip.sha256
-                  displayName: Verify artifact checksum
+                - template: ../steps/verify-artifact.yml
+                  parameters:
+                    artifactName: ${{ parameters.artifactName }}
 
                 - task: AzureWebApp@1
                   displayName: Deploy production staging slot
@@ -61,12 +180,12 @@ stages:
                     slotName: ${{ parameters.slotName }}
                     package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/webapp.zip
                     runtimeStack: 'NODE|22-lts'
-                    startUpCommand: node server.js
+                    startUpCommand: 'HOSTNAME=0.0.0.0 node server.js'
 
-                - bash: |
-                    set -euo pipefail
-                    curl --fail --silent --show-error --retry 6 --retry-delay 5 "${{ parameters.stagingSmokeTestUrl }}/api/health"
-                  displayName: Smoke test staging slot
+                - template: ../steps/smoke-test.yml
+                  parameters:
+                    url: ${{ parameters.stagingSmokeTestUrl }}
+                    displayName: Verify staging artifact identity before swap
 
                 - task: AzureAppServiceManage@0
                   displayName: Swap staging to production
@@ -78,7 +197,7 @@ stages:
                     SourceSlot: ${{ parameters.slotName }}
                     SwapWithProduction: true
 
-                - bash: |
-                    set -euo pipefail
-                    curl --fail --silent --show-error --retry 6 --retry-delay 5 "${{ parameters.productionSmokeTestUrl }}/api/health"
-                  displayName: Smoke test production
+                - template: ../steps/smoke-test.yml
+                  parameters:
+                    url: ${{ parameters.productionSmokeTestUrl }}
+                    displayName: Verify production artifact identity after swap

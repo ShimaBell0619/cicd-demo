@@ -1,0 +1,23 @@
+parameters:
+  - name: artifactName
+    type: string
+
+steps:
+  - bash: |
+      set -euo pipefail
+
+      artifact_dir="$(Pipeline.Workspace)/${{ parameters.artifactName }}"
+      cd "${artifact_dir}"
+
+      sha256sum --check artifact-checksums.sha256
+
+      if ! grep -Fq "\"commitSha\": \"$(Build.SourceVersion)\"" release-manifest.json; then
+        echo "Artifact manifest does not match Build.SourceVersion=$(Build.SourceVersion)." >&2
+        exit 1
+      fi
+
+      if ! grep -Fq "\"pipelineBuildId\": \"$(Build.BuildId)\"" release-manifest.json; then
+        echo "Artifact manifest does not match Build.BuildId=$(Build.BuildId)." >&2
+        exit 1
+      fi
+    displayName: Verify artifact identity and checksums
