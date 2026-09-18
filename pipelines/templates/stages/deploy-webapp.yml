@@ -1,0 +1,66 @@
+parameters:
+  - name: stageName
+    type: string
+  - name: displayName
+    type: string
+  - name: dependsOn
+    type: object
+    default: []
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: environmentName
+    type: string
+  - name: azureSubscription
+    type: string
+  - name: appName
+    type: string
+  - name: resourceGroupName
+    type: string
+  - name: artifactName
+    type: string
+  - name: smokeTestUrl
+    type: string
+    default: ''
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: ${{ parameters.displayName }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+
+    jobs:
+      - deployment: Deploy
+        displayName: Deploy ${{ parameters.environmentName }}
+        environment: ${{ parameters.environmentName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: none
+
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                  displayName: Download release artifact
+
+                - bash: |
+                    set -euo pipefail
+                    cd "$(Pipeline.Workspace)/${{ parameters.artifactName }}"
+                    sha256sum --check webapp.zip.sha256
+                  displayName: Verify artifact checksum
+
+                - task: AzureWebApp@1
+                  displayName: Deploy Azure Web App
+                  inputs:
+                    azureSubscription: ${{ parameters.azureSubscription }}
+                    appType: webAppLinux
+                    appName: ${{ parameters.appName }}
+                    package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/webapp.zip
+                    runtimeStack: NODE|22-lts
+                    startUpCommand: node server.js
+
+                ${{ if ne(parameters.smokeTestUrl, '') }}:
+                  - bash: |
+                      set -euo pipefail
+                      curl --fail --silent --show-error                         --retry 6                         --retry-delay 5                         "${{ parameters.smokeTestUrl }}/api/health"
+                    displayName: Smoke test

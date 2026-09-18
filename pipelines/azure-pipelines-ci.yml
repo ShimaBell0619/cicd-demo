@@ -1,0 +1,52 @@
+name: ci-$(Date:yyyyMMdd).$(Rev:r)
+
+trigger:
+  branches:
+    include:
+      - develop
+
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - develop
+      - main
+      - release/*
+      - hotfix/*
+
+pool:
+  name: self-hosted-linux
+
+variables:
+  nodeVersion: '22.x'
+  artifactName: webapp
+
+stages:
+  - stage: Build
+    displayName: Build and validate
+    jobs:
+      - job: Build
+        displayName: Build Next.js
+        steps:
+          - checkout: self
+            clean: true
+
+          - template: templates/steps/node-build.yml
+            parameters:
+              nodeVersion: $(nodeVersion)
+              artifactName: $(artifactName)
+
+  - template: templates/stages/deploy-webapp.yml
+    parameters:
+      stageName: Deploy_DEV
+      displayName: Deploy DEV
+      dependsOn:
+        - Build
+      condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+      environmentName: dev
+      azureSubscription: REPLACE_WITH_DEV_SERVICE_CONNECTION
+      appName: REPLACE_WITH_DEV_WEB_APP
+      resourceGroupName: REPLACE_WITH_DEV_RESOURCE_GROUP
+      artifactName: $(artifactName)
+      smokeTestUrl: ''

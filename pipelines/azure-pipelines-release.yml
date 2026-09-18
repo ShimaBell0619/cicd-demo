@@ -1,0 +1,111 @@
+name: release-$(Date:yyyyMMdd).$(Rev:r)
+
+trigger:
+  branches:
+    include:
+      - release/*
+      - hotfix/*
+
+pr: none
+
+pool:
+  name: self-hosted-linux
+
+variables:
+  nodeVersion: '22.x'
+  artifactName: webapp
+
+stages:
+  - stage: Build
+    displayName: Build immutable release artifact
+    jobs:
+      - job: Build
+        displayName: Build Next.js release
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+
+          - bash: |
+              set -euo pipefail
+
+              branch="${BUILD_SOURCEBRANCH#refs/heads/}"
+              case "${branch}" in
+                release/*|hotfix/*)
+                  version="${branch#*/}"
+                  ;;
+                *)
+                  echo "Expected release/X.Y.Z or hotfix/X.Y.Z, got: ${branch}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "Version must use X.Y.Z format: ${version}" >&2
+                exit 1
+              fi
+
+              echo "Release version: ${version}"
+              echo "##vso[task.setvariable variable=releaseVersion]${version}"
+              echo "##vso[build.updatebuildnumber]${version}.${BUILD_BUILDID}"
+            displayName: Derive release version from branch
+
+          - template: templates/steps/node-build.yml
+            parameters:
+              nodeVersion: $(nodeVersion)
+              artifactName: $(artifactName)
+              releaseVersion: $(releaseVersion)
+
+  - template: templates/stages/deploy-webapp.yml
+    parameters:
+      stageName: Deploy_DEV
+      displayName: Deploy release artifact to DEV
+      dependsOn:
+        - Build
+      environmentName: dev
+      azureSubscription: REPLACE_WITH_DEV_SERVICE_CONNECTION
+      appName: REPLACE_WITH_DEV_WEB_APP
+      resourceGroupName: REPLACE_WITH_DEV_RESOURCE_GROUP
+      artifactName: $(artifactName)
+      smokeTestUrl: ''
+
+  - template: templates/stages/deploy-webapp.yml
+    parameters:
+      stageName: Deploy_UAT
+      displayName: Deploy same artifact to UAT
+      dependsOn:
+        - Deploy_DEV
+      environmentName: uat
+      azureSubscription: REPLACE_WITH_UAT_SERVICE_CONNECTION
+      appName: REPLACE_WITH_UAT_WEB_APP
+      resourceGroupName: REPLACE_WITH_UAT_RESOURCE_GROUP
+      artifactName: $(artifactName)
+      smokeTestUrl: ''
+
+  - template: templates/stages/deploy-prod.yml
+    parameters:
+      stageName: Deploy_PROD
+      displayName: Deploy PROD staging and swap
+      dependsOn:
+        - Deploy_UAT
+      environmentName: prod
+      azureSubscription: REPLACE_WITH_PROD_SERVICE_CONNECTION
+      appName: REPLACE_WITH_PROD_WEB_APP
+      resourceGroupName: REPLACE_WITH_PROD_RESOURCE_GROUP
+      artifactName: $(artifactName)
+      slotName: staging
+      stagingSmokeTestUrl: ''
+      productionSmokeTestUrl: ''
+
+  - template: templates/stages/deploy-webapp.yml
+    parameters:
+      stageName: Deploy_DR
+      displayName: Deploy same artifact to DR
+      dependsOn:
+        - Deploy_PROD
+      environmentName: dr
+      azureSubscription: REPLACE_WITH_DR_SERVICE_CONNECTION
+      appName: REPLACE_WITH_DR_WEB_APP
+      resourceGroupName: REPLACE_WITH_DR_RESOURCE_GROUP
+      artifactName: $(artifactName)
+      smokeTestUrl: ''

@@ -1,0 +1,88 @@
+parameters:
+  - name: stageName
+    type: string
+  - name: displayName
+    type: string
+  - name: dependsOn
+    type: object
+    default: []
+  - name: environmentName
+    type: string
+  - name: azureSubscription
+    type: string
+  - name: appName
+    type: string
+  - name: resourceGroupName
+    type: string
+  - name: artifactName
+    type: string
+  - name: slotName
+    type: string
+    default: staging
+  - name: stagingSmokeTestUrl
+    type: string
+    default: ''
+  - name: productionSmokeTestUrl
+    type: string
+    default: ''
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: ${{ parameters.displayName }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: succeeded()
+
+    jobs:
+      - deployment: DeployProduction
+        displayName: Deploy and swap production
+        environment: ${{ parameters.environmentName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: none
+
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                  displayName: Download release artifact
+
+                - bash: |
+                    set -euo pipefail
+                    cd "$(Pipeline.Workspace)/${{ parameters.artifactName }}"
+                    sha256sum --check webapp.zip.sha256
+                  displayName: Verify artifact checksum
+
+                - task: AzureWebApp@1
+                  displayName: Deploy production staging slot
+                  inputs:
+                    azureSubscription: ${{ parameters.azureSubscription }}
+                    appType: webAppLinux
+                    appName: ${{ parameters.appName }}
+                    deployToSlotOrASE: true
+                    resourceGroupName: ${{ parameters.resourceGroupName }}
+                    slotName: ${{ parameters.slotName }}
+                    package: $(Pipeline.Workspace)/${{ parameters.artifactName }}/webapp.zip
+                    runtimeStack: NODE|22-lts
+                    startUpCommand: node server.js
+
+                ${{ if ne(parameters.stagingSmokeTestUrl, '') }}:
+                  - bash: |
+                      set -euo pipefail
+                      curl --fail --silent --show-error                         --retry 6                         --retry-delay 5                         "${{ parameters.stagingSmokeTestUrl }}/api/health"
+                    displayName: Smoke test staging slot
+
+                - task: AzureAppServiceManage@0
+                  displayName: Swap staging to production
+                  inputs:
+                    azureSubscription: ${{ parameters.azureSubscription }}
+                    Action: Swap Slots
+                    WebAppName: ${{ parameters.appName }}
+                    ResourceGroupName: ${{ parameters.resourceGroupName }}
+                    SourceSlot: ${{ parameters.slotName }}
+                    SwapWithProduction: true
+
+                ${{ if ne(parameters.productionSmokeTestUrl, '') }}:
+                  - bash: |
+                      set -euo pipefail
+                      curl --fail --silent --show-error                         --retry 6                         --retry-delay 5                         "${{ parameters.productionSmokeTestUrl }}/api/health"
+                    displayName: Smoke test production

@@ -1,0 +1,99 @@
+parameters:
+  - name: nodeVersion
+    type: string
+  - name: artifactName
+    type: string
+  - name: releaseVersion
+    type: string
+    default: ''
+
+steps:
+  - task: UseNode@1
+    displayName: Use Node.js ${{ parameters.nodeVersion }}
+    inputs:
+      version: ${{ parameters.nodeVersion }}
+      checkLatest: false
+
+  - task: Cache@2
+    displayName: Restore npm cache
+    inputs:
+      key: 'npm | "$(Agent.OS)" | package.json'
+      restoreKeys: |
+        npm | "$(Agent.OS)"
+      path: $(Pipeline.Workspace)/.npm
+
+  - bash: |
+      set -euo pipefail
+      npm install --cache "$(Pipeline.Workspace)/.npm" --prefer-offline --no-audit --no-fund
+    displayName: Install dependencies
+
+  - task: Cache@2
+    displayName: Restore Next.js build cache
+    inputs:
+      key: 'next | "$(Agent.OS)" | package.json | "$(Build.SourceVersion)"'
+      restoreKeys: |
+        next | "$(Agent.OS)" | package.json
+        next | "$(Agent.OS)"
+      path: $(Build.SourcesDirectory)/.next/cache
+
+  - bash: |
+      set -euo pipefail
+      npm run build
+    displayName: Build Next.js
+
+  - bash: |
+      set -euo pipefail
+
+      mkdir -p "$(Build.ArtifactStagingDirectory)"
+
+      npx --yes @cyclonedx/cyclonedx-npm@6.0.1         --omit dev         --output-reproducible         --validate         --output-format JSON         --output-file "$(Build.ArtifactStagingDirectory)/sbom.cdx.json"
+    displayName: Generate CycloneDX SBOM
+
+  - bash: |
+      set -euo pipefail
+
+      package_root="$(Build.ArtifactStagingDirectory)/package"
+      rm -rf "${package_root}"
+      mkdir -p "${package_root}"
+
+      cp -a .next/standalone/. "${package_root}/"
+
+      mkdir -p "${package_root}/.next"
+      cp -a .next/static "${package_root}/.next/static"
+
+      if [[ -d public ]]; then
+        cp -a public "${package_root}/public"
+      fi
+
+      cat > "$(Build.ArtifactStagingDirectory)/release-manifest.json" <<EOF
+      {
+        "repository": "$(Build.Repository.Name)",
+        "commitSha": "$(Build.SourceVersion)",
+        "sourceBranch": "$(Build.SourceBranch)",
+        "pipelineBuildId": "$(Build.BuildId)",
+        "releaseVersion": "${{ parameters.releaseVersion }}"
+      }
+      EOF
+    displayName: Prepare standalone deployment package
+
+  - task: ArchiveFiles@2
+    displayName: Create immutable web app zip
+    inputs:
+      rootFolderOrFile: $(Build.ArtifactStagingDirectory)/package
+      includeRootFolder: false
+      archiveType: zip
+      archiveFile: $(Build.ArtifactStagingDirectory)/webapp.zip
+      replaceExistingArchive: true
+
+  - bash: |
+      set -euo pipefail
+      rm -rf "$(Build.ArtifactStagingDirectory)/package"
+      sha256sum "$(Build.ArtifactStagingDirectory)/webapp.zip"         > "$(Build.ArtifactStagingDirectory)/webapp.zip.sha256"
+    displayName: Record artifact checksum
+
+  - task: PublishPipelineArtifact@1
+    displayName: Publish immutable pipeline artifact
+    inputs:
+      targetPath: $(Build.ArtifactStagingDirectory)
+      artifact: ${{ parameters.artifactName }}
+      publishLocation: pipeline
