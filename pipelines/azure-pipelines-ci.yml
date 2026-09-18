@@ -5,15 +5,9 @@ trigger:
     include:
       - develop
 
-pr:
-  autoCancel: true
-  drafts: false
-  branches:
-    include:
-      - develop
-      - main
-      - release/*
-      - hotfix/*
+# Azure Repos Git does not support YAML PR triggers.
+# Configure this pipeline as a required Build Validation branch policy instead.
+pr: none
 
 pool:
   name: self-hosted-linux
