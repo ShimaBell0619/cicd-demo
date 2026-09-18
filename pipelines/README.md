@@ -97,11 +97,9 @@ The Next.js application uses `output: "standalone"`, so `webapp.zip` contains th
 
 ## Smoke tests
 
-The reusable templates support `/api/health` smoke tests, but URLs are empty in the initial commit because the real private DNS/custom-domain names are not yet defined.
+The reusable templates support `/api/health` smoke tests.
 
-When the URLs are known, set:
-
-- DEV/UAT/DR: `smokeTestUrl`
-- PROD: `stagingSmokeTestUrl` and `productionSmokeTestUrl`
+- DEV/UAT/DR smoke tests are optional in the first iteration because their actual private URLs are not known yet.
+- PROD staging and production smoke tests are mandatory. The release entrypoint currently contains `REPLACE_WITH_...` URL placeholders so an unconfigured pipeline fails before a successful production rollout instead of silently skipping verification.
 
 For a Private Endpoint-only App Service, the self-hosted agent must have network/DNS reachability to those endpoints.
