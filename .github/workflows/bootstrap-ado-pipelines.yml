@@ -1,0 +1,96 @@
+name: Bootstrap Azure Pipelines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bootstrap-ado-pipelines.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    env:
+      AZURE_DEVOPS_RESOURCE: '499b84ac-1321-427f-aa17-267ca6975798'
+      ADO_ORG: 'shimaoka0619'
+      ADO_PROJECT: 'cicd-demo'
+      ADO_REPO: 'cicd-demo'
+
+    steps:
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create Azure Pipelines definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          token="$(az account get-access-token --resource "$AZURE_DEVOPS_RESOURCE" --query accessToken --output tsv)"
+          echo "::add-mask::$token"
+
+          auth="Authorization: Bearer $token"
+          base="https://dev.azure.com/$ADO_ORG/$ADO_PROJECT/_apis"
+
+          repo_json="$(curl --fail --silent --show-error --header "$auth" "$base/git/repositories/$ADO_REPO?api-version=7.1")"
+          repo_id="$(jq -r '.id' <<< "$repo_json")"
+          repo_url="$(jq -r '.webUrl' <<< "$repo_json")"
+
+          create_if_missing() {
+            local name="$1"
+            local yaml="$2"
+
+            existing="$(curl --fail --silent --show-error --header "$auth" "$base/build/definitions?name=$name&api-version=7.1")"
+            count="$(jq '.count' <<< "$existing")"
+            if [[ "$count" -gt 0 ]]; then
+              echo "$name already exists."
+              return 0
+            fi
+
+            body="$(jq -n --arg name "$name" --arg repoId "$repo_id" --arg repoName "$ADO_REPO" --arg repoUrl "$repo_url" --arg yaml "$yaml" '
+              {
+                name: $name,
+                path: "\\",
+                type: "build",
+                queueStatus: "enabled",
+                repository: {
+                  id: $repoId,
+                  name: $repoName,
+                  url: $repoUrl,
+                  type: "TfsGit",
+                  defaultBranch: "refs/heads/main",
+                  clean: "true",
+                  checkoutSubmodules: false
+                },
+                process: {
+                  type: 2,
+                  yamlFilename: $yaml
+                }
+              }
+            ')"
+
+            code="$(curl --silent --show-error --output /tmp/ado-create.json --write-out '%{http_code}' --request POST --header "$auth" --header 'Content-Type: application/json' --data "$body" "$base/build/definitions?api-version=7.1")"
+
+            if [[ "$code" -lt 200 || "$code" -ge 300 ]]; then
+              cat /tmp/ado-create.json
+              echo "::error::Failed to create $name (HTTP $code)"
+              exit 1
+            fi
+
+            jq '{id,name,path,process,repository:{id,name,type,defaultBranch}}' /tmp/ado-create.json
+          }
+
+          create_if_missing "cicd-demo-ci" "pipelines/ci.yml"
+          create_if_missing "cicd-demo-release" "pipelines/release.yml"
+
+          echo
+          echo "Current pipeline definitions:"
+          curl --fail --silent --show-error --header "$auth" "$base/pipelines?api-version=7.1" | jq -r '.value[] | "\(.id)\t\(.name)"'
