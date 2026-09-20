@@ -1,0 +1,103 @@
+name: Mirror GitHub to Azure Repos
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+      - 'hotfix/**'
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '.github/workflows/mirror-azure-repos.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  mirror:
+    if: \${{ github.event.deleted == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    env:
+      AZURE_DEVOPS_RESOURCE: '499b84ac-1321-427f-aa17-267ca6975798'
+      ADO_REMOTE: 'https://dev.azure.com/shimaoka0619/cicd-demo/_git/cicd-demo'
+
+    steps:
+      - name: Checkout GitHub source of truth
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: \${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: \${{ vars.AZURE_TENANT_ID }}
+          subscription-id: \${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Mirror current ref to Azure Repos
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          token="$(az account get-access-token \
+            --resource "$AZURE_DEVOPS_RESOURCE" \
+            --query accessToken \
+            --output tsv)"
+          echo "::add-mask::$token"
+
+          auth_header="AUTHORIZATION: bearer $token"
+          git remote add ado "$ADO_REMOTE"
+
+          if [[ "$GITHUB_REF" == refs/heads/* ]]; then
+            branch="\${GITHUB_REF#refs/heads/}"
+
+            if git -c http.extraheader="$auth_header" \
+              ls-remote --exit-code --heads ado "refs/heads/$branch" >/dev/null 2>&1; then
+
+              git -c http.extraheader="$auth_header" \
+                fetch --no-tags ado \
+                "refs/heads/$branch:refs/remotes/ado/$branch"
+
+              if ! git merge-base --is-ancestor "refs/remotes/ado/$branch" "$GITHUB_SHA"; then
+                echo "::error::Azure Repos branch '$branch' is not an ancestor of GitHub. Refusing non-fast-forward overwrite."
+                exit 1
+              fi
+            fi
+
+            git -c http.extraheader="$auth_header" \
+              push ado "$GITHUB_SHA:refs/heads/$branch"
+
+            echo "Mirrored branch '$branch' at $GITHUB_SHA."
+
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="\${GITHUB_REF#refs/tags/}"
+            github_object="$(git rev-parse "$GITHUB_REF")"
+
+            if remote_line="$(git -c http.extraheader="$auth_header" \
+              ls-remote --exit-code --tags ado "refs/tags/$tag" 2>/dev/null)"; then
+              ado_object="$(awk 'NR==1 {print $1}' <<< "$remote_line")"
+
+              if [[ "$ado_object" != "$github_object" ]]; then
+                echo "::error::Azure Repos tag '$tag' already exists with a different object. Refusing overwrite."
+                exit 1
+              fi
+
+              echo "Tag '$tag' already matches Azure Repos."
+              exit 0
+            fi
+
+            git -c http.extraheader="$auth_header" \
+              push ado "refs/tags/$tag:refs/tags/$tag"
+
+            echo "Mirrored tag '$tag'."
+          else
+            echo "::error::Unsupported ref: $GITHUB_REF"
+            exit 1
+          fi
