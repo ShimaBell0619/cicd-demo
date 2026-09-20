@@ -11,12 +11,12 @@ permissions:
   id-token: write
 
 env:
-  LOCATION: japaneast
+  DEPLOYMENT_LOCATION: japaneast
 
 jobs:
   deploy-verify-destroy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RESOURCE_GROUP: rg-cicd-demo-poc-gha-${{ github.run_id }}
       NAME_PREFIX: cicd-poc-${{ github.run_id }}
@@ -35,7 +35,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl --fail --silent --show-error             https://raw.githubusercontent.com/ShimaBell0619/switchbot-home-dashboard/main/.github/workflows/deploy-azure.yml             --output /tmp/azure-bootstrap.yml
+          curl --fail --silent --show-error \
+            https://raw.githubusercontent.com/ShimaBell0619/switchbot-home-dashboard/main/.github/workflows/deploy-azure.yml \
+            --output /tmp/azure-bootstrap.yml
 
           read_value() {
             local name="$1"
@@ -69,18 +71,70 @@ jobs:
           set -euo pipefail
           az bicep build --file infra/main.bicep --stdout >/dev/null
 
-      - name: Preview deployment
+      - name: Select cheapest deployable App Service SKU
         shell: bash
         run: |
           set -euo pipefail
-          az deployment sub what-if             --location "$LOCATION"             --name "$DEPLOYMENT_NAME"             --template-file infra/main.bicep             --parameters infra/poc.bicepparam             resourceGroupName="$RESOURCE_GROUP"             namePrefix="$NAME_PREFIX"             --no-pretty-print
+
+          selected_region=""
+          selected_sku=""
+
+          for region in japaneast japanwest eastus; do
+            for sku in F1 B1 B2 B3 P0v3 P0v4; do
+              probe_name="probe-${GITHUB_RUN_ID}-${region}-${sku,,}"
+              echo "Probing region=${region}, sku=${sku}"
+
+              set +e
+              az deployment sub what-if \
+                --location "$DEPLOYMENT_LOCATION" \
+                --name "$probe_name" \
+                --template-file infra/main.bicep \
+                --parameters infra/poc.bicepparam \
+                location="$region" \
+                resourceGroupName="$RESOURCE_GROUP" \
+                namePrefix="$NAME_PREFIX" \
+                skuName="$sku" \
+                --no-pretty-print \
+                > /tmp/whatif.log 2>&1
+              status=$?
+              set -e
+
+              if [[ "$status" -eq 0 ]]; then
+                cat /tmp/whatif.log
+                selected_region="$region"
+                selected_sku="$sku"
+                break 2
+              fi
+
+              grep -E 'SubscriptionIsOverQuotaForSku|Current Limit|Amount required|not available|not supported|InvalidTemplateDeployment' /tmp/whatif.log || true
+            done
+          done
+
+          [[ -n "$selected_region" && -n "$selected_sku" ]] || {
+            echo "::error::No tested App Service SKU/region combination passed Azure preflight validation."
+            exit 1
+          }
+
+          echo "Selected region=${selected_region}, sku=${selected_sku}"
+          echo "SELECTED_LOCATION=${selected_region}" >> "$GITHUB_ENV"
+          echo "SELECTED_SKU=${selected_sku}" >> "$GITHUB_ENV"
 
       - name: Deploy disposable PoC
         shell: bash
         run: |
           set -euo pipefail
 
-          az deployment sub create             --location "$LOCATION"             --name "$DEPLOYMENT_NAME"             --template-file infra/main.bicep             --parameters infra/poc.bicepparam             resourceGroupName="$RESOURCE_GROUP"             namePrefix="$NAME_PREFIX"             --query properties.outputs             --output json > /tmp/outputs.json
+          az deployment sub create \
+            --location "$DEPLOYMENT_LOCATION" \
+            --name "$DEPLOYMENT_NAME" \
+            --template-file infra/main.bicep \
+            --parameters infra/poc.bicepparam \
+            location="$SELECTED_LOCATION" \
+            resourceGroupName="$RESOURCE_GROUP" \
+            namePrefix="$NAME_PREFIX" \
+            skuName="$SELECTED_SKU" \
+            --query properties.outputs \
+            --output json > /tmp/outputs.json
 
           jq . /tmp/outputs.json
 
@@ -94,8 +148,12 @@ jobs:
           plan_name="$(jq -r '.appServicePlanName.value' /tmp/outputs.json)"
           [[ -n "$plan_name" && "$plan_name" != "null" ]]
 
-          sku="$(az appservice plan show             --resource-group "$RESOURCE_GROUP"             --name "$plan_name"             --query sku.name             --output tsv)"
-          [[ "$sku" == "F1" ]]
+          sku="$(az appservice plan show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$plan_name" \
+            --query sku.name \
+            --output tsv)"
+          [[ "$sku" == "$SELECTED_SKU" ]]
 
           app_count="$(jq '.apps.value | length' /tmp/outputs.json)"
           [[ "$app_count" -eq 4 ]]
@@ -104,13 +162,25 @@ jobs:
             app_name="$(jq -r --arg env "$environment" '.apps.value[] | select(.environment == $env) | .name' /tmp/outputs.json)"
             [[ -n "$app_name" && "$app_name" != "null" ]]
 
-            state="$(az webapp show               --resource-group "$RESOURCE_GROUP"               --name "$app_name"               --query state               --output tsv)"
+            state="$(az webapp show \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$app_name" \
+              --query state \
+              --output tsv)"
             [[ "$state" == "Running" ]]
 
-            app_env="$(az webapp config appsettings list               --resource-group "$RESOURCE_GROUP"               --name "$app_name"               --query "[?name=='APP_ENV'].value | [0]"               --output tsv)"
+            app_env="$(az webapp config appsettings list \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$app_name" \
+              --query "[?name=='APP_ENV'].value | [0]" \
+              --output tsv)"
             [[ "$app_env" == "$environment" ]]
 
-            build_during_deploy="$(az webapp config appsettings list               --resource-group "$RESOURCE_GROUP"               --name "$app_name"               --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT'].value | [0]"               --output tsv)"
+            build_during_deploy="$(az webapp config appsettings list \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$app_name" \
+              --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT'].value | [0]" \
+              --output tsv)"
             [[ "$build_during_deploy" == "false" ]]
 
             echo "$environment: $app_name (Running, APP_ENV=$app_env)"
@@ -119,7 +189,7 @@ jobs:
           {
             echo "### Azure Bicep PoC"
             echo "- Resource group: `$RESOURCE_GROUP`"
-            echo "- App Service Plan: `$plan_name` / B1"
+            echo "- App Service Plan: `$plan_name` / $SELECTED_SKU ($SELECTED_LOCATION)"
             echo "- Web Apps: 4 (DEV/UAT/PROD/DR)"
             echo "- Slot / PE / self-hosted agent: intentionally not created"
             echo "- Result: deployment verification passed"
@@ -132,7 +202,10 @@ jobs:
           set -euo pipefail
 
           if [[ "$(az group exists --name "$RESOURCE_GROUP")" == "true" ]]; then
-            az group delete               --name "$RESOURCE_GROUP"               --yes               --no-wait
+            az group delete \
+              --name "$RESOURCE_GROUP" \
+              --yes \
+              --no-wait
           fi
 
           for attempt in $(seq 1 60); do
@@ -147,9 +220,14 @@ jobs:
           echo "::error::Resource group still exists after cleanup timeout."
           exit 1
 
-      - name: Remove subscription deployment record
+      - name: Remove subscription deployment records
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          az deployment sub delete --name "$DEPLOYMENT_NAME" 2>/dev/null || true
+          az deployment sub list \
+            --query "[?starts_with(name, 'probe-${GITHUB_RUN_ID}-') || name=='$DEPLOYMENT_NAME'].name" \
+            --output tsv |
+          while IFS= read -r name; do
+            [[ -z "$name" ]] || az deployment sub delete --name "$name" 2>/dev/null || true
+          done
