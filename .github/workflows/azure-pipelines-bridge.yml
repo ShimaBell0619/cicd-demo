@@ -1,0 +1,235 @@
+name: Azure Pipelines Bridge
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+jobs:
+  bridge:
+    if: >-
+      \${{ github.event.issue.number == 1 &&
+          !github.event.issue.pull_request &&
+          github.event.comment.author_association == 'OWNER' &&
+          startsWith(github.event.comment.body, '/ado-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    env:
+      AZURE_DEVOPS_RESOURCE: '499b84ac-1321-427f-aa17-267ca6975798'
+
+    steps:
+      - name: Parse command
+        id: command
+        shell: bash
+        env:
+          COMMAND: \${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          read -r -a parts <<< "$COMMAND"
+          action="\${parts[0]:-}"
+
+          case "$action" in
+            /ado-list)
+              [[ "\${#parts[@]}" -eq 3 ]] || { echo "Usage: /ado-list <org> <project>" >&2; exit 1; }
+              ;;
+            /ado-run)
+              [[ "\${#parts[@]}" -ge 5 && "\${#parts[@]}" -le 6 ]] || {
+                echo "Usage: /ado-run <org> <project> <pipelineId> <ref> [firstProductionRelease=true|false]" >&2
+                exit 1
+              }
+              [[ "\${parts[3]}" =~ ^[0-9]+$ ]] || { echo "pipelineId must be numeric." >&2; exit 1; }
+              [[ "\${parts[4]}" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]] || { echo "ref must use refs/heads/..." >&2; exit 1; }
+              if [[ "\${#parts[@]}" -eq 6 ]]; then
+                [[ "\${parts[5]}" =~ ^firstProductionRelease=(true|false)$ ]] || {
+                  echo "Optional parameter must be firstProductionRelease=true|false." >&2
+                  exit 1
+                }
+              fi
+              ;;
+            /ado-status)
+              [[ "\${#parts[@]}" -eq 5 ]] || { echo "Usage: /ado-status <org> <project> <pipelineId> <runId>" >&2; exit 1; }
+              [[ "\${parts[3]}" =~ ^[0-9]+$ && "\${parts[4]}" =~ ^[0-9]+$ ]] || {
+                echo "pipelineId and runId must be numeric." >&2
+                exit 1
+              }
+              ;;
+            *)
+              echo "Unsupported command: $action" >&2
+              exit 1
+              ;;
+          esac
+
+          org="\${parts[1]}"
+          project="\${parts[2]}"
+
+          [[ "$org" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid organization." >&2; exit 1; }
+          [[ "$project" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "Use a URL-safe project name or project ID without spaces." >&2
+            exit 1
+          }
+
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "org=$org" >> "$GITHUB_OUTPUT"
+          echo "project=$project" >> "$GITHUB_OUTPUT"
+
+          if [[ "$action" == "/ado-run" || "$action" == "/ado-status" ]]; then
+            echo "pipeline_id=\${parts[3]}" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [[ "$action" == "/ado-run" ]]; then
+            echo "ref=\${parts[4]}" >> "$GITHUB_OUTPUT"
+            if [[ "\${#parts[@]}" -eq 6 ]]; then
+              echo "first_release=\${parts[5]#firstProductionRelease=}" >> "$GITHUB_OUTPUT"
+            else
+              echo "first_release=" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [[ "$action" == "/ado-status" ]]; then
+            echo "run_id=\${parts[4]}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: \${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: \${{ vars.AZURE_TENANT_ID }}
+          subscription-id: \${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Call Azure DevOps REST API
+        shell: bash
+        env:
+          ACTION: \${{ steps.command.outputs.action }}
+          ORG: \${{ steps.command.outputs.org }}
+          PROJECT: \${{ steps.command.outputs.project }}
+          PIPELINE_ID: \${{ steps.command.outputs.pipeline_id }}
+          REF_NAME: \${{ steps.command.outputs.ref }}
+          FIRST_RELEASE: \${{ steps.command.outputs.first_release }}
+          RUN_ID: \${{ steps.command.outputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          token="$(az account get-access-token --resource "$AZURE_DEVOPS_RESOURCE" --query accessToken --output tsv)"
+          echo "::add-mask::$token"
+
+          encoded_project="$(jq -rn --arg value "$PROJECT" '$value|@uri')"
+          base="https://dev.azure.com/$ORG/$encoded_project/_apis"
+
+          call_api() {
+            local method="$1"
+            local url="$2"
+            local body="\${3:-}"
+            local response="$4"
+
+            if [[ -n "$body" ]]; then
+              code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+                --request "$method" \
+                --header "Authorization: Bearer $token" \
+                --header "Content-Type: application/json" \
+                --data "$body" \
+                "$url")"
+            else
+              code="$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+                --request "$method" \
+                --header "Authorization: Bearer $token" \
+                "$url")"
+            fi
+
+            if [[ "$code" -lt 200 || "$code" -ge 300 ]]; then
+              {
+                echo "### Azure Pipelines Bridge failed"
+                echo
+                echo "Command: $ACTION"
+                echo "HTTP: $code"
+                echo
+                jq . "$response" 2>/dev/null || cat "$response"
+              } > /tmp/bridge-result.md
+              return 1
+            fi
+          }
+
+          case "$ACTION" in
+            /ado-list)
+              call_api GET "$base/pipelines?api-version=7.1" "" /tmp/response.json
+              {
+                echo "### Azure Pipelines"
+                echo
+                echo "| ID | Pipeline | Folder |"
+                echo "|---:|---|---|"
+                jq -r '.value[] | "| \(.id) | \(.name) | \(.folder // "\\") |"' /tmp/response.json
+              } > /tmp/bridge-result.md
+              ;;
+
+            /ado-run)
+              body="$(jq -n --arg ref "$REF_NAME" '{resources:{repositories:{self:{refName:$ref}}}}')"
+
+              if [[ -n "$FIRST_RELEASE" ]]; then
+                body="$(jq --arg value "$FIRST_RELEASE" '. + {templateParameters:{firstProductionRelease:$value}}' <<< "$body")"
+              fi
+
+              call_api POST "$base/pipelines/$PIPELINE_ID/runs?api-version=7.1" "$body" /tmp/response.json
+
+              run_id="$(jq -r '.id' /tmp/response.json)"
+              state="$(jq -r '.state // "unknown"' /tmp/response.json)"
+              web_url="$(jq -r '._links.web.href // empty' /tmp/response.json)"
+
+              {
+                echo "### Azure Pipeline queued"
+                echo
+                echo "Pipeline ID: $PIPELINE_ID"
+                echo "Run ID: $run_id"
+                echo "Ref: $REF_NAME"
+                echo "State: $state"
+                [[ -z "$web_url" ]] || echo "Run: $web_url"
+                echo
+                echo "Status command:"
+                echo "/ado-status $ORG $PROJECT $PIPELINE_ID $run_id"
+              } > /tmp/bridge-result.md
+              ;;
+
+            /ado-status)
+              call_api GET "$base/pipelines/$PIPELINE_ID/runs/$RUN_ID?api-version=7.1" "" /tmp/response.json
+
+              state="$(jq -r '.state // "unknown"' /tmp/response.json)"
+              result="$(jq -r '.result // "pending"' /tmp/response.json)"
+              web_url="$(jq -r '._links.web.href // empty' /tmp/response.json)"
+
+              {
+                echo "### Azure Pipeline status"
+                echo
+                echo "Pipeline ID: $PIPELINE_ID"
+                echo "Run ID: $RUN_ID"
+                echo "State: $state"
+                echo "Result: $result"
+                [[ -z "$web_url" ]] || echo "Run: $web_url"
+              } > /tmp/bridge-result.md
+              ;;
+          esac
+
+      - name: Reply to control issue
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: \${{ github.token }}
+          ISSUE_NUMBER: \${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f /tmp/bridge-result.md ]]; then
+            printf '%s\n' \
+              '### Azure Pipelines Bridge failed' \
+              '' \
+              'The workflow stopped before Azure DevOps returned a result. Check the GitHub Actions run log.' \
+              > /tmp/bridge-result.md
+          fi
+
+          gh api \
+            --method POST \
+            "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" \
+            --raw-field body="$(cat /tmp/bridge-result.md)"
