@@ -4,8 +4,8 @@ param location string
 @description('Short resource-name prefix.')
 param namePrefix string
 
-@description('App Service Plan SKU. B1 is used for the first low-cost PoC phase.')
-param skuName string = 'B1'
+@description('App Service Plan SKU. F1 is used for the first zero-cost PoC phase.')
+param skuName string = 'F1'
 
 var environments = [
   'dev'

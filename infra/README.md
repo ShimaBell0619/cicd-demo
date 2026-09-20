@@ -5,7 +5,7 @@ This is the first, intentionally low-cost infrastructure phase.
 ## What it creates
 
 - 1 disposable Resource Group
-- 1 Linux App Service Plan (B1, one instance)
+- 1 Linux App Service Plan (F1 Free, shared compute)
 - 4 Linux Web Apps on the same plan:
   - DEV
   - UAT
@@ -79,4 +79,4 @@ Only after the public/Microsoft-hosted flow is proven:
 3. validate staging deploy -> smoke -> swap -> production smoke;
 4. add PROD/staging Private Endpoints and Private DNS;
 5. temporarily add a self-hosted agent and validate App + SCM private deployment paths;
-6. delete the temporary resources or return to B1 after the test.
+6. delete the temporary resources or return to F1 after the test.

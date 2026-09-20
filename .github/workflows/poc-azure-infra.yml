@@ -95,7 +95,7 @@ jobs:
           [[ -n "$plan_name" && "$plan_name" != "null" ]]
 
           sku="$(az appservice plan show             --resource-group "$RESOURCE_GROUP"             --name "$plan_name"             --query sku.name             --output tsv)"
-          [[ "$sku" == "B1" ]]
+          [[ "$sku" == "F1" ]]
 
           app_count="$(jq '.apps.value | length' /tmp/outputs.json)"
           [[ "$app_count" -eq 4 ]]

@@ -9,8 +9,8 @@ param resourceGroupName string = 'rg-cicd-demo-poc-jpe'
 @description('Short prefix used for App Service resource names.')
 param namePrefix string = 'cicd-demo-poc'
 
-@description('Low-cost App Service Plan SKU for the first PoC phase. B1 intentionally has no deployment slot.')
-param skuName string = 'B1'
+@description('Free App Service Plan SKU for the first PoC phase. F1 intentionally has no deployment slot.')
+param skuName string = 'F1'
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: resourceGroupName
