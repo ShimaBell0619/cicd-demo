@@ -1,0 +1,234 @@
+# Read top to bottom: Build -> DEV -> UAT/accept/main merge -> PROD approval -> PROD -> tag -> DR.
+# Required resource permissions/checks are in docs/setup.md. YAML alone is insufficient.
+name: release-$(Build.SourceBranchName)-$(Date:yyyyMMdd).$(Rev:r)
+trigger: none
+pr: none
+
+parameters:
+  - name: firstProductionRelease
+    displayName: First deployment only (PROD is empty and no vX.Y.Z tags exist)
+    type: boolean
+    default: false
+
+# Configure these values once. Service connection names below are literal on purpose.
+variables:
+  RELEASE_BUILD: 'true'
+  devApp: REPLACE_WITH_DEV_APP
+  devGroup: REPLACE_WITH_DEV_RESOURCE_GROUP
+  devUrl: https://REPLACE_WITH_DEV_HOST
+  uatApp: REPLACE_WITH_UAT_APP
+  uatGroup: REPLACE_WITH_UAT_RESOURCE_GROUP
+  uatUrl: https://REPLACE_WITH_UAT_HOST
+  prodApp: REPLACE_WITH_PROD_APP
+  prodGroup: REPLACE_WITH_PROD_RESOURCE_GROUP
+  prodUrl: https://REPLACE_WITH_PROD_HOST
+  stagingUrl: https://REPLACE_WITH_STAGING_HOST
+  drApp: REPLACE_WITH_DR_APP
+  drGroup: REPLACE_WITH_DR_RESOURCE_GROUP
+  drUrl: https://REPLACE_WITH_DR_HOST
+  uatApprovers: REPLACE_WITH_UAT_APPROVERS
+
+stages:
+  - stage: Build
+    jobs:
+      - job: Build
+        pool:
+          vmImage: ubuntu-24.04
+        steps:
+          - checkout: self
+            clean: true
+            persistCredentials: false
+          - bash: |
+              set -euo pipefail
+              [[ "$BUILD_REASON" == Manual ]] || { echo 'Release must be started manually.' >&2; exit 1; }
+              python3 -c 'import sys; sys.path.insert(0, "pipelines/scripts"); from artifact import identity; print(identity())'
+            displayName: Require manual release/X.Y.Z or hotfix/X.Y.Z run
+          - template: templates/build.yml
+
+  - stage: DEV
+    dependsOn: Build
+    lockBehavior: sequential
+    jobs:
+      - deployment: DeployDEV
+        environment: dev
+        pool:
+          name: deploy-private-linux
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  persistCredentials: false
+                - download: none
+                - download: current
+                  artifact: release
+                - bash: python3 pipelines/scripts/artifact.py verify "$ARTIFACT_DIR"
+                  displayName: Verify current Run artifact
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                - template: templates/deploy.yml
+                  parameters:
+                    connection: sc-cicd-dev
+                    app: $(devApp)
+                    group: $(devGroup)
+                    url: $(devUrl)
+                    environment: dev
+
+  - stage: UAT
+    dependsOn: DEV
+    lockBehavior: sequential
+    jobs:
+      - deployment: DeployUAT
+        environment: uat
+        pool:
+          name: deploy-private-linux
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  persistCredentials: false
+                - download: none
+                - download: current
+                  artifact: release
+                - bash: python3 pipelines/scripts/artifact.py verify "$ARTIFACT_DIR"
+                  displayName: Verify current Run artifact
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                - template: templates/deploy.yml
+                  parameters:
+                    connection: sc-cicd-uat
+                    app: $(uatApp)
+                    group: $(uatGroup)
+                    url: $(uatUrl)
+                    environment: uat
+      # Same stage: UAT stays locked while a person tests this exact artifact.
+      - job: AcceptUAT
+        dependsOn: DeployUAT
+        pool: server
+        timeoutInMinutes: 10080
+        steps:
+          - task: ManualValidation@1
+            timeoutInMinutes: 8640
+            inputs:
+              notifyUsers: $(uatApprovers)
+              approvers: $(uatApprovers)
+              allowApproversToApproveTheirOwnRuns: false
+              onTimeout: reject
+              instructions: |
+                Run $(Build.BuildId), $(Build.SourceBranch), SHA $(Build.SourceVersion).
+                1. Accept UAT results for this exact SHA/Run.
+                2. Mark THIS Run "Retain indefinitely" and record the rollback Run ID.
+                3. Complete the PR into main using a merge commit (no squash/rebase).
+                4. Ensure main contains the same files as the candidate. Do not change main
+                   again until this release finishes. If a hotfix intervenes, cancel this Run.
+                5. Resume. The separate PROD service-connection approval follows.
+
+  # One stage holds the PROD service-connection lock through swap, tag and DR.
+  - stage: Promote
+    displayName: PROD approval, staging, swap, tag, DR
+    dependsOn: UAT
+    condition: and(succeeded(), eq(dependencies.UAT.result, 'Succeeded'))
+    lockBehavior: sequential
+    jobs:
+      - deployment: Production
+        environment: prod
+        pool:
+          name: deploy-private-linux
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  fetchDepth: 0
+                  fetchTags: true
+                  persistCredentials: true # Read-only token, used to refresh main/tags.
+                - download: none
+                - download: current
+                  artifact: release
+                - bash: python3 pipelines/scripts/promote.py guard "$ARTIFACT_DIR" "$PROD_URL"
+                  displayName: Verify main, version and current PROD before deployment
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                    PROD_URL: $(prodUrl)
+                    FIRST_RELEASE: ${{ parameters.firstProductionRelease }}
+                - template: templates/deploy.yml
+                  parameters:
+                    connection: sc-cicd-prod
+                    app: $(prodApp)
+                    group: $(prodGroup)
+                    url: $(stagingUrl)
+                    environment: prod-staging
+                    slot: staging
+                - bash: python3 pipelines/scripts/promote.py guard "$ARTIFACT_DIR" "$PROD_URL"
+                  displayName: Recheck release eligibility immediately before swap
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                    PROD_URL: $(prodUrl)
+                    FIRST_RELEASE: ${{ parameters.firstProductionRelease }}
+                - task: AzureAppServiceManage@0
+                  displayName: Swap staging into production
+                  inputs:
+                    azureSubscription: sc-cicd-prod
+                    Action: Swap Slots
+                    WebAppName: $(prodApp)
+                    ResourceGroupName: $(prodGroup)
+                    SourceSlot: staging
+                    SwapWithProduction: true
+                - bash: python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
+                  displayName: Verify production after swap
+                  env:
+                    PROD_URL: $(prodUrl)
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                - task: AzureCLI@3
+                  displayName: Tag the successfully deployed artifact
+                  inputs:
+                    connectionType: azureDevOps
+                    azureDevOpsServiceConnection: sc-cicd-tags
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: python3 pipelines/scripts/promote.py tag "$ARTIFACT_DIR"
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+
+      - deployment: DisasterRecovery
+        dependsOn: Production
+        environment: dr
+        pool:
+          name: deploy-private-linux
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  persistCredentials: false
+                - download: none
+                - download: current
+                  artifact: release
+                - bash: |
+                    set -euo pipefail
+                    python3 pipelines/scripts/artifact.py verify "$ARTIFACT_DIR"
+                    python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
+                  displayName: Verify artifact is still current PROD before touching DR
+                  env:
+                    PROD_URL: $(prodUrl)
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                - template: templates/deploy.yml
+                  parameters:
+                    connection: sc-cicd-dr
+                    app: $(drApp)
+                    group: $(drGroup)
+                    url: $(drUrl)
+                    environment: dr

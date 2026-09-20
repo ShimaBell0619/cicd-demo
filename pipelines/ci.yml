@@ -1,0 +1,17 @@
+name: ci-$(Date:yyyyMMdd).$(Rev:r)
+trigger:
+  branches:
+    include: [develop, main, release/*, hotfix/*]
+# Azure Repos PRs use Branch Policy > Build validation, not YAML pr triggers.
+pr: none
+
+pool:
+  vmImage: ubuntu-24.04
+
+steps:
+  - checkout: self
+    clean: true
+    persistCredentials: false
+  - template: templates/build.yml
+    parameters:
+      publish: false

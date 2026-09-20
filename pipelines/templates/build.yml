@@ -1,0 +1,16 @@
+# Shared only by CI and the one Release Build job.
+parameters:
+  - name: publish
+    type: boolean
+    default: true
+
+steps:
+  - task: UseNode@1
+    inputs:
+      version: '22.x'
+  - bash: bash pipelines/scripts/build.sh
+    displayName: Test, build and package Node application
+  - ${{ if eq(parameters.publish, true) }}:
+      - publish: $(Build.ArtifactStagingDirectory)/release
+        artifact: release
+        displayName: Publish the one Release Artifact

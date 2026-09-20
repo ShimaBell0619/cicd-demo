@@ -7,3 +7,5 @@ out/
 coverage/
 *.log
 .DS_Store
+__pycache__/
+artifacts/
