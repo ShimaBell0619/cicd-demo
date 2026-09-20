@@ -1,10 +1,10 @@
 targetScope = 'subscription'
 
 @description('Azure region used by the PoC resources.')
-param location string = 'japaneast'
+param location string = 'japanwest'
 
 @description('Resource group created only for this disposable PoC.')
-param resourceGroupName string = 'rg-cicd-demo-poc-jpe'
+param resourceGroupName string = 'rg-cicd-demo-poc-jpw'
 
 @description('Short prefix used for App Service resource names.')
 param namePrefix string = 'cicd-demo-poc'

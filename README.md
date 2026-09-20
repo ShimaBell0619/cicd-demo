@@ -47,7 +47,7 @@ Stage は **Build / DEV / UAT / Promote の4つ**です。Promote の中に PROD
 | `pipelines/templates/deploy.yml` | Web App への配布と Smoke Test |
 | `pipelines/scripts/` | Build、Artifact 検証、Smoke、投入前確認・Tag の小さな処理 |
 | `tests/test_release.py` | 誤配布・古い候補・二重投入を防ぐ回帰テスト |
-| [infra/](infra/README.md) | 最小コストPoC用Bicep。B1共有Plan + DEV/UAT/PROD/DR |
+| [infra/](infra/README.md) | 最小コストPoC用Bicep。F1共有Plan + DEV/UAT/PROD/DR |
 | [docs/setup.md](docs/setup.md) | Azure DevOps / Azure の必須設定と PoC チェックリスト |
 | [docs/operations.md](docs/operations.md) | 開発・Release・Hotfix・再実行・Rollback の手順 |
 | [docs/design.md](docs/design.md) | 採用理由、削除した仕組み、.NET Functions への展開 |
@@ -83,6 +83,6 @@ Azure PoC を始める前に [setup.md](docs/setup.md) の全項目を確認し�
 
 ## 最小コスト Azure PoC
 
-最初のAzure PoCは、[infra/README.md](infra/README.md) のBicepで **B1のLinux App Service Planを1つだけ作り、DEV / UAT / PROD / DRの4 Web Appで共有**します。Deployment Slot、Private Endpoint、Private DNS、self-hosted Agentはこの段階では作りません。
+最初のAzure PoCは、[infra/README.md](infra/README.md) のBicepで **F1のLinux App Service Planを1つだけ作り、DEV / UAT / PROD / DRの4 Web Appで共有**します。Deployment Slot、Private Endpoint、Private DNS、self-hosted Agentはこの段階では作りません。
 
 このPhase 1ではMicrosoft-hosted Agent + public endpointでCI/CDフローを確認し、Slot / Private Endpoint / self-hosted経路はPhase 2で必要な期間だけ追加して検証します。

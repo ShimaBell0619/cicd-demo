@@ -35,7 +35,7 @@ az bicep build --file infra/main.bicep
 
 ```bash
 az deployment sub what-if \
-  --location japaneast \
+  --location japanwest \
   --name cicd-demo-poc \
   --template-file infra/main.bicep \
   --parameters infra/poc.bicepparam
@@ -45,7 +45,7 @@ az deployment sub what-if \
 
 ```bash
 az deployment sub create \
-  --location japaneast \
+  --location japanwest \
   --name cicd-demo-poc \
   --template-file infra/main.bicep \
   --parameters infra/poc.bicepparam
@@ -66,7 +66,7 @@ The Resource Group exists only for this PoC. Delete the whole group when the val
 
 ```bash
 az group delete \
-  --name rg-cicd-demo-poc-jpe \
+  --name rg-cicd-demo-poc-jpw \
   --yes
 ```
 
@@ -80,3 +80,18 @@ Only after the public/Microsoft-hosted flow is proven:
 4. add PROD/staging Private Endpoints and Private DNS;
 5. temporarily add a self-hosted agent and validate App + SCM private deployment paths;
 6. delete the temporary resources or return to F1 after the test.
+
+
+## Verified PoC result
+
+Verified on 2026-09-20 through a temporary GitHub Actions runner using Azure OIDC:
+
+- Japan West
+- Linux App Service Plan F1
+- 4 Web Apps on the same plan: DEV / UAT / PROD / DR
+- all four apps reached Running state
+- `APP_ENV` matched each environment
+- `SCM_DO_BUILD_DURING_DEPLOYMENT=false` was confirmed
+- the disposable Resource Group was deleted and deletion was verified
+
+For this subscription, Japan East preflight validation reported zero F1/B1 App Service quota, so the proven Phase 1 default is Japan West/F1.
