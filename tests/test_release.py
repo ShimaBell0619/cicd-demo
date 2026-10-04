@@ -161,7 +161,11 @@ class SmokeAndTagTests(unittest.TestCase):
         with patch.dict(os.environ, {"SYSTEM_COLLECTIONURI": "https://dev.azure.com/example/",
                                     "SYSTEM_TEAMPROJECTID": "project", "BUILD_REPOSITORY_ID": "repo"}), \
                 patch.object(promote.subprocess, "check_output", return_value=json.dumps(response)) as az:
-            promote.create_tag(self.metadata)
+            for name in ('v1.1.0', 'refs/tags/v1.1.0'):
+                with self.subTest(name=name):
+                    response['name'] = name
+                    az.return_value = json.dumps(response)
+                    promote.create_tag(self.metadata)
             command = az.call_args.args[0]
             payload = json.loads(command[command.index("--body") + 1])
             self.assertEqual(payload["taggedObject"]["objectId"], self.metadata["commitSha"])
@@ -170,6 +174,29 @@ class SmokeAndTagTests(unittest.TestCase):
             az.return_value = json.dumps(response)
             with self.assertRaisesRegex(ValueError, "differs"):
                 promote.create_tag(self.metadata)
+
+    def test_existing_tag_is_checked_without_writing(self):
+        refs = {'value': [{'name': 'refs/tags/v1.1.0', 'objectId': 'd' * 40}]}
+        tag = {'name': 'v1.1.0', 'taggedObject': {'objectId': 'a' * 40},
+               'message': promote.tag_message(self.metadata)}
+        with patch.dict(os.environ, {'SYSTEM_COLLECTIONURI': 'https://dev.azure.com/example/',
+                                     'SYSTEM_TEAMPROJECTID': 'project', 'BUILD_REPOSITORY_ID': 'repo'}), \
+                patch.object(promote.subprocess, 'check_output', side_effect=[json.dumps(refs), json.dumps(tag)]) as az:
+            promote.verify_existing_tag(self.metadata)
+            self.assertEqual(az.call_count, 2)
+            self.assertTrue(all(c.args[0][c.args[0].index('--method') + 1] == 'get' for c in az.call_args_list))
+
+    def test_existing_tag_rejects_missing_ref_and_wrong_annotation(self):
+        with patch.dict(os.environ, {'SYSTEM_COLLECTIONURI': 'https://dev.azure.com/example/',
+                                     'SYSTEM_TEAMPROJECTID': 'project', 'BUILD_REPOSITORY_ID': 'repo'}):
+            with patch.object(promote, 'read_json', return_value={'value': []}), \
+                    self.assertRaisesRegex(ValueError, 'existing'):
+                promote.verify_existing_tag(self.metadata)
+            correct = {'name': 'v1.1.0', 'taggedObject': {'objectId': 'a' * 40},
+                       'message': promote.tag_message(self.metadata)}
+            for field, value in [('name', 'v1.1.1'), ('message', 'pipelineRun=41; sha256=' + 'b' * 64)]:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'differs'):
+                    promote.verify_tag_response({**correct, field: value}, self.metadata)
 
 
 if __name__ == "__main__":
