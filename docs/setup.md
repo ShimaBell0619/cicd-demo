@@ -51,13 +51,13 @@ Deploy ホストに常設の広い Managed Identity / PAT / Azure CLI ログイ�
 | --- | --- |
 | `sc-cicd-dev` / `sc-cicd-uat` / `sc-cicd-dr` | 環境ごとの ARM WIF。各 Web App に必要な範囲だけ。Release のみ認可、Branch control |
 | `sc-cicd-prod` | PROD Web App と Slot に必要な ARM WIF。Release のみ認可、Branch control、**人間の Approval（自己承認不可）と Exclusive lock** |
-| `sc-cicd-tags` | 専用 Entra 身元の Azure DevOps WIF 接続。対象 Repo の Read / Create tag のみ。Release のみ認可、Branch control |
+| `sc-cicd-tags` | 専用 Entra 身元の Azure DevOps WIF 接続。対象 Repo の Read / Create tagと、同じProjectのView project-level informationのみ。Release のみ認可、Branch control |
 
 全接続で Grant access to all pipelines を無効にします。Branch control は Deploy Pool と同じ許可ブランチ・保護必須・不明時拒否です。Azure RBAC は Web App 単位の Website Contributor を出発点に PoC で検証し、必要なら操作を絞った Custom Role とします。Subscription Contributor / Owner は不要です。
 
 **PROD の Approval は Environment だけでなく Service Connection 自体に置きます。** これにより `environment: prod` を YAML から外したジョブも、接続の承認なしで本番へ配布できません。承認者は UAT、SHA/Run ID、main、戻し先 Run、初回配布オプション、メンテナンス時間を確認します。
 
-`sc-cicd-tags` の身元を Azure DevOps に登録し、タグ作成以外の branch 書込み、Force push、タグ変更/削除、Policy bypass を許可しません。Project Build Service にタグ権限を追加して代用しません。`AzureCLI@3` と Azure DevOps WIF 接続の利用可否を初回 PoC で確認します。
+`sc-cicd-tags` の身元を Azure DevOps に登録し、Repo APIのProjectアクセス確認に必要な同Projectの **View project-level information** だけを追加します。Project Readersを使ってBuild/他RepoなどのReadを継承させません。タグ作成以外の branch 書込み、Force push、タグ変更/削除、Policy bypass を許可しません。Project Build Service にタグ権限を追加して代用しません。`AzureCLI@3` と Azure DevOps WIF 接続の利用可否を初回 PoC で確認します。
 
 Environment は `dev / uat / prod / dr` をあらかじめ作成し、Release だけに許可します。dev・uat・dr に Exclusive lock を設定します。prod の排他の基点は **sc-cicd-prod** です。YAML の `lockBehavior: sequential` とセットで使用します。
 

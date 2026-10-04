@@ -56,6 +56,37 @@ def guard(metadata, production_url, first_release=False):
     print(f"Promotion eligible: {metadata['version']} / run {metadata['buildId']}")
 
 
+def verify_tag_response(result, metadata):
+    # Azure DevOps returns either the short annotated name or its full ref name.
+    name = 'v' + metadata['version']
+    if (result.get('taggedObject', {}).get('objectId') != metadata['commitSha']
+            or result.get('name') not in (name, 'refs/tags/' + name)
+            or result.get('message') != tag_message(metadata)):
+        raise ValueError('Tag response differs from the released artifact; inspect remote tag')
+
+
+def repository_api():
+    return (os.environ['SYSTEM_COLLECTIONURI'] + os.environ['SYSTEM_TEAMPROJECTID']
+            + '/_apis/git/repositories/' + os.environ['BUILD_REPOSITORY_ID'])
+
+
+def read_json(url):
+    return json.loads(subprocess.check_output([
+        'az', 'rest', '--method', 'get', '--url', url,
+        '--resource', '499b84ac-1321-427f-aa17-267ca6975798', '--output', 'json'], text=True))
+
+
+def verify_existing_tag(metadata):
+    name = 'v' + metadata['version']
+    refs = read_json(repository_api() + '/refs?filter=tags/' + name + '&api-version=7.1')
+    matching = [ref for ref in refs.get('value', []) if ref.get('name') == 'refs/tags/' + name]
+    if len(matching) != 1 or not re.fullmatch(r'[0-9a-f]{40}', matching[0].get('objectId', '')):
+        raise ValueError('Expected one existing annotated release tag')
+    result = read_json(repository_api() + '/annotatedtags/' + matching[0]['objectId'] + '?api-version=7.1')
+    verify_tag_response(result, metadata)
+    print(f'Verified existing {name}: {tag_message(metadata)}')
+
+
 def create_tag(metadata):
     # AzureCLI@3 supplies the dedicated Entra identity, never Project Build Service.
     url = (os.environ["SYSTEM_COLLECTIONURI"] + os.environ["SYSTEM_TEAMPROJECTID"]
@@ -69,10 +100,7 @@ def create_tag(metadata):
         "--resource", "499b84ac-1321-427f-aa17-267ca6975798",
         "--headers", "Content-Type=application/json", "--body", json.dumps(payload),
         "--output", "json"], text=True))
-    if (result.get("taggedObject", {}).get("objectId") != metadata["commitSha"]
-            or result.get("name") != "refs/tags/" + payload["name"]
-            or result.get("message") != payload["message"]):
-        raise ValueError("Tag response differs from the released artifact; inspect remote tag")
+    verify_tag_response(result, metadata)
     print(f"Created {payload['name']}: {payload['message']}")
 
 
@@ -83,5 +111,7 @@ if __name__ == "__main__":
         guard(metadata, sys.argv[3], os.environ.get("FIRST_RELEASE", "false").lower() == "true")
     elif action == "tag":
         create_tag(metadata)
+    elif action == 'verify-tag':
+        verify_existing_tag(metadata)
     else:
         raise ValueError(f"Unknown promotion action: {action}")

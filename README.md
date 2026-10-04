@@ -53,7 +53,7 @@ Stage は **Build / DEV / UAT / Promote の4つ**です。Promote の中に PROD
 | [docs/operations.md](docs/operations.md) | 開発・Release・Hotfix・再実行・Rollback の手順 |
 | [docs/design.md](docs/design.md) | 採用理由、削除した仕組み、.NET Functions への展開 |
 
-`release.yml` から読む YAML テンプレートは1階層です。Stage 用テンプレート、共通ルート、Recovery Pipeline はありません。
+`release.yml` から読む YAML テンプレートは1階層です。Stage 用テンプレート、共通ルートはありません。通常運用の復旧はRunbookを使います。2026-10-04のPoCでは、Tagの権限不足からRun 43の保持済みZIPを再利用する[Tag/DR専用復旧](https://github.com/ShimaBell0619/cicd-demo/blob/release/1.0.0-recovery/pipelines/recovery-tag-dr.yml)を別途実測しました。この設定はRun 43に固定されており、将来のReleaseにはそのまま使いません。
 
 ## Artifact と失敗時の基本
 
