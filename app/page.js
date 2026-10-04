@@ -7,7 +7,7 @@ export default function Home() {
         This minimal Next.js application is the deployment target for the
         dev → uat → prod → dr pipeline demo.
       </p>
-      <a href="/api/health">Health endpoint</a>
+      <a href="/api/health">View health status</a>
     </main>
   );
 }
