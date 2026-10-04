@@ -88,7 +88,7 @@ stages:
                     app: $(devApp)
                     group: $(devGroup)
                     url: $(devUrl)
-                    environment: sh-dev
+                    environment: dev
 
   - stage: UAT
     dependsOn: DEV
@@ -126,7 +126,7 @@ stages:
                     app: $(uatApp)
                     group: $(uatGroup)
                     url: $(uatUrl)
-                    environment: sh-uat
+                    environment: uat
       # Same stage: UAT stays locked while a person tests this exact artifact.
       - job: AcceptUAT
         dependsOn: DeployUAT
@@ -284,4 +284,4 @@ stages:
                     app: $(drApp)
                     group: $(drGroup)
                     url: $(drUrl)
-                    environment: sh-dr
+                    environment: dr
