@@ -26,7 +26,7 @@ variables:
   drApp: app-cicd-demo-poc-dr-flosex3ojhb5q
   drGroup: rg-cicd-demo-poc-jpw
   drUrl: https://app-cicd-demo-poc-dr-flosex3ojhb5q.azurewebsites.net
-  uatApprovers: app-cicd-demo-poc-uat-flosex3ojhb5qROVERS
+  uatApprovers: shimaoka0619@gmail.com
 
 stages:
   - stage: Build
