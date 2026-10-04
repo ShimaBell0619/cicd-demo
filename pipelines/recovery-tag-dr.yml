@@ -33,14 +33,11 @@ jobs:
             - bash: |
                 set -euo pipefail
                 [[ "$BUILD_REASON" == Manual ]]
+                export RELEASE_BUILD=true BUILD_SOURCEBRANCH=refs/heads/release/1.0.0 BUILD_SOURCEVERSION=5fb8464833440843e87d9705960b231e6772e202 BUILD_BUILDID=43
                 python3 pipelines/scripts/artifact.py verify "$ARTIFACT_DIR"
                 python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
               displayName: Verify Run 43 ZIP and current PROD
               env:
-                RELEASE_BUILD: 'true'
-                BUILD_SOURCEBRANCH: refs/heads/release/1.0.0
-                BUILD_SOURCEVERSION: 5fb8464833440843e87d9705960b231e6772e202
-                BUILD_BUILDID: '43'
                 ARTIFACT_DIR: $(Pipeline.Workspace)/release
                 PROD_URL: https://app-cicd-demo-poc-prod-flosex3ojhb5q.azurewebsites.net
             - task: AzureCLI@3
@@ -50,12 +47,11 @@ jobs:
                 azureDevOpsServiceConnection: sc-cicd-tags
                 scriptType: bash
                 scriptLocation: inlineScript
-                inlineScript: python3 pipelines/scripts/promote.py tag "$ARTIFACT_DIR"
+                inlineScript: |
+                  set -euo pipefail
+                  export RELEASE_BUILD=true BUILD_SOURCEBRANCH=refs/heads/release/1.0.0 BUILD_SOURCEVERSION=5fb8464833440843e87d9705960b231e6772e202 BUILD_BUILDID=43
+                  python3 pipelines/scripts/promote.py tag "$ARTIFACT_DIR"
               env:
-                RELEASE_BUILD: 'true'
-                BUILD_SOURCEBRANCH: refs/heads/release/1.0.0
-                BUILD_SOURCEVERSION: 5fb8464833440843e87d9705960b231e6772e202
-                BUILD_BUILDID: '43'
                 ARTIFACT_DIR: $(Pipeline.Workspace)/release
             - bash: python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
               displayName: Recheck current PROD before DR
