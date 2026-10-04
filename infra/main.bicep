@@ -9,8 +9,12 @@ param resourceGroupName string = 'rg-cicd-demo-poc-jpw'
 @description('Short prefix used for App Service resource names.')
 param namePrefix string = 'cicd-demo-poc'
 
-@description('Free App Service Plan SKU for the first PoC phase. F1 intentionally has no deployment slot.')
-param skuName string = 'F1'
+@description('Standard S1 supports the PROD staging slot used by the release PoC.')
+@allowed(['S1'])
+param skuName string = 'S1'
+
+@description('Delete all PoC resources on this Japan-local calendar date.')
+param expiresOn string
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: resourceGroupName
@@ -18,6 +22,7 @@ resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   tags: {
     purpose: 'cicd-poc'
     lifecycle: 'disposable'
+    expiresOn: expiresOn
   }
 }
 
@@ -28,9 +33,11 @@ module appService './app-service.bicep' = {
     location: location
     namePrefix: namePrefix
     skuName: skuName
+    expiresOn: expiresOn
   }
 }
 
 output resourceGroupName string = resourceGroup.name
 output appServicePlanName string = appService.outputs.appServicePlanName
 output apps array = appService.outputs.apps
+output staging object = appService.outputs.staging

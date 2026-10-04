@@ -13,20 +13,20 @@ parameters:
 # Configure these values once. Service connection names below are literal on purpose.
 variables:
   RELEASE_BUILD: 'true'
-  devApp: REPLACE_WITH_DEV_APP
-  devGroup: REPLACE_WITH_DEV_RESOURCE_GROUP
-  devUrl: https://REPLACE_WITH_DEV_HOST
-  uatApp: REPLACE_WITH_UAT_APP
-  uatGroup: REPLACE_WITH_UAT_RESOURCE_GROUP
-  uatUrl: https://REPLACE_WITH_UAT_HOST
-  prodApp: REPLACE_WITH_PROD_APP
-  prodGroup: REPLACE_WITH_PROD_RESOURCE_GROUP
-  prodUrl: https://REPLACE_WITH_PROD_HOST
-  stagingUrl: https://REPLACE_WITH_STAGING_HOST
-  drApp: REPLACE_WITH_DR_APP
-  drGroup: REPLACE_WITH_DR_RESOURCE_GROUP
-  drUrl: https://REPLACE_WITH_DR_HOST
-  uatApprovers: REPLACE_WITH_UAT_APPROVERS
+  devApp: app-cicd-demo-poc-dev-flosex3ojhb5q
+  devGroup: rg-cicd-demo-poc-jpw
+  devUrl: https://app-cicd-demo-poc-dev-flosex3ojhb5q.azurewebsites.net
+  uatApp: app-cicd-demo-poc-uat-flosex3ojhb5q
+  uatGroup: rg-cicd-demo-poc-jpw
+  uatUrl: https://app-cicd-demo-poc-uat-flosex3ojhb5q.azurewebsites.net
+  prodApp: app-cicd-demo-poc-prod-flosex3ojhb5q
+  prodGroup: rg-cicd-demo-poc-jpw
+  prodUrl: https://app-cicd-demo-poc-prod-flosex3ojhb5q.azurewebsites.net
+  stagingUrl: https://app-cicd-demo-poc-prod-flosex3ojhb5q-staging.azurewebsites.net
+  drApp: app-cicd-demo-poc-dr-flosex3ojhb5q
+  drGroup: rg-cicd-demo-poc-jpw
+  drUrl: https://app-cicd-demo-poc-dr-flosex3ojhb5q.azurewebsites.net
+  uatApprovers: app-cicd-demo-poc-uat-flosex3ojhb5qROVERS
 
 stages:
   - stage: Build
@@ -52,7 +52,10 @@ stages:
       - deployment: DeployDEV
         environment: dev
         pool:
-          name: deploy-private-linux
+          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
+        # Production/private endpoint path: replace the active pool above with:
+        # pool:
+        #   name: deploy-private-linux
         workspace:
           clean: all
         strategy:
@@ -84,7 +87,10 @@ stages:
       - deployment: DeployUAT
         environment: uat
         pool:
-          name: deploy-private-linux
+          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
+        # Production/private endpoint path: replace the active pool above with:
+        # pool:
+        #   name: deploy-private-linux
         workspace:
           clean: all
         strategy:
@@ -119,7 +125,7 @@ stages:
             inputs:
               notifyUsers: $(uatApprovers)
               approvers: $(uatApprovers)
-              allowApproversToApproveTheirOwnRuns: false
+              allowApproversToApproveTheirOwnRuns: true # Disposable PoC only; production must use false.
               onTimeout: reject
               instructions: |
                 Run $(Build.BuildId), $(Build.SourceBranch), SHA $(Build.SourceVersion).
@@ -140,7 +146,10 @@ stages:
       - deployment: Production
         environment: prod
         pool:
-          name: deploy-private-linux
+          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
+        # Production/private endpoint path: replace the active pool above with:
+        # pool:
+        #   name: deploy-private-linux
         workspace:
           clean: all
         strategy:
@@ -204,7 +213,10 @@ stages:
         dependsOn: Production
         environment: dr
         pool:
-          name: deploy-private-linux
+          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
+        # Production/private endpoint path: replace the active pool above with:
+        # pool:
+        #   name: deploy-private-linux
         workspace:
           clean: all
         strategy:

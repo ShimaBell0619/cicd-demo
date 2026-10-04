@@ -1,16 +1,17 @@
 # cicd-demo
 
 **Azure Repos Git + Azure Pipelines で、1回作った ZIP を DEV → UAT → PROD → DR へ配布する PoC です。**
-GitHub は設計・実装用のミラーです。実環境の接続先と権限設定は未投入です。
+GitHub は設計・実装用のミラーです。今回の使い捨てPoCはStandard S1とPublic経由で検証します。
 
 ## 最初に覚えること
 
 | Pipeline | 起動条件 | 行うこと |
 | --- | --- | --- |
 | [CI](pipelines/ci.yml) | PR の Branch Policy と develop/main/release/hotfix の更新 | テスト・Build・パッケージ化の検証。配布権限なし |
+| [Infra](pipelines/infra.yml) | 担当者が当日の日付を指定して手動起動 | 使い捨てS1環境の検証・差分確認・構築 |
 | [Release](pipelines/release.yml) | 担当者が release/X.Y.Z または hotfix/X.Y.Z を選んで手動起動 | Build once → DEV → UAT → main 反映確認 → PROD 承認 → staging/swap → Tag → DR |
 
-Agent は2種類です。Build は使い捨ての Microsoft-hosted Ubuntu、Deploy は Private Endpoint に届く専用 Linux Agent を使用します。Build と Deploy を同じ VM に置きません。
+今回のPoCではBuild/DeployともMicrosoft-hosted Ubuntuを使用し、各ジョブで使い捨てのホストを使用します。最終構成で使用するSelf-hosted Agentのpool設定は、`release.yml`の配布ジョブにコメントアウトで残しています。
 
 **develop の更新は CI だけを実行します。DEV は Release 候補の確認環境です。** 日々の develop 自動配布は採用せず、候補を上書きする経路をなくしました。
 
@@ -47,7 +48,7 @@ Stage は **Build / DEV / UAT / Promote の4つ**です。Promote の中に PROD
 | `pipelines/templates/deploy.yml` | Web App への配布と Smoke Test |
 | `pipelines/scripts/` | Build、Artifact 検証、Smoke、投入前確認・Tag の小さな処理 |
 | `tests/test_release.py` | 誤配布・古い候補・二重投入を防ぐ回帰テスト |
-| [infra/](infra/README.md) | 最小コストPoC用Bicep。F1共有Plan + DEV/UAT/PROD/DR |
+| [infra/](infra/README.md) | 当日削除するPoC用Bicep。S1共有Plan + DEV/UAT/PROD/DR + PROD staging |
 | [docs/setup.md](docs/setup.md) | Azure DevOps / Azure の必須設定と PoC チェックリスト |
 | [docs/operations.md](docs/operations.md) | 開発・Release・Hotfix・再実行・Rollback の手順 |
 | [docs/design.md](docs/design.md) | 採用理由、削除した仕組み、.NET Functions への展開 |
@@ -81,8 +82,8 @@ npm run dev
 Azure PoC を始める前に [setup.md](docs/setup.md) の全項目を確認してください。YAML の条件式だけでは権限境界を構成できません。
 
 
-## 最小コスト Azure PoC
+## 当日削除する Azure PoC
 
-最初のAzure PoCは、[infra/README.md](infra/README.md) のBicepで **F1のLinux App Service Planを1つだけ作り、DEV / UAT / PROD / DRの4 Web Appで共有**します。Deployment Slot、Private Endpoint、Private DNS、self-hosted Agentはこの段階では作りません。
+[infra/README.md](infra/README.md) のBicepで、Japan Westに **Standard S1を1つ、DEV/UAT/PROD/DRとPROD staging** を構築します。Public経由＋Microsoft-hosted AgentでCI/CDを確認し、Azureリソースは検証当日に削除します。今回のDRは同一Plan/リージョンへの配布検証です。
 
-このPhase 1ではMicrosoft-hosted Agent + public endpointでCI/CDフローを確認し、Slot / Private Endpoint / self-hosted経路はPhase 2で必要な期間だけ追加して検証します。
+この個人PoCに限りUAT/PRODは本人承認を許可します。人による承認ステップは残します。Private Endpoint / Private DNS / Self-hosted Agentの実環境設定は今回の検証対象に含めません。詳しくは [当日の検証手順](docs/poc-s1.md) を参照してください。

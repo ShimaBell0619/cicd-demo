@@ -2,11 +2,14 @@
 
 この設定は実装の一部です。接続名を置き換えるだけで本番運用を開始しないでください。対象は Azure DevOps **Services** です。
 
+2026-10-04の使い捨てPoCは [poc-s1.md](poc-s1.md) の範囲で実施します。S1 + PROD staging、Public endpoint、Microsoft-hosted Agentを使用し、本人承認を今回だけ許可します。以下のPrivate Endpoint / Self-hosted Agent / 自己承認禁止は本番構成の要件です。
+
 ## 1. Pipeline と実行者
 
 | 名前 | YAML | Queue 権限 |
 | --- | --- | --- |
 | CI | `pipelines/ci.yml` | 開発者、Branch Policy |
+| Infra | `pipelines/infra.yml` | PoC環境の管理者のみ |
 | Release | `pipelines/release.yml` | Release Managers のみ |
 
 通常の開発者と Project Build Service に、Release の Queue/Edit、Checks/Service Connection/Agent Pool の管理権限を与えません。Pipeline 定義の YAML パス変更もインフラ管理者だけにします。Classic Pipeline は無効化します。

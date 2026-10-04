@@ -1,97 +1,47 @@
-# CI/CD PoC infrastructure
+# Disposable S1 CI/CD PoC
 
-This is the first, intentionally low-cost infrastructure phase.
+This PoC uses Japan West and deletes its Azure resources on the day of the test.
 
-## What it creates
+## Resources
 
-- 1 disposable Resource Group
-- 1 Linux App Service Plan (F1 Free, shared compute)
-- 4 Linux Web Apps on the same plan:
-  - DEV
-  - UAT
-  - PROD
-  - DR
+- One disposable resource group: `rg-cicd-demo-poc-jpw`.
+- One Linux Standard S1 App Service Plan, shared by DEV/UAT/PROD/DR and PROD staging.
+- Four Web Apps and the PROD `staging` deployment slot.
+- Public App/SCM endpoints, HTTPS, TLS 1.2, Node.js 22, build-on-deploy disabled.
+- `APP_ENV` is fixed to each environment. PROD marks it as a slot setting.
+- No Private Endpoint, Private DNS or self-hosted agent is provisioned.
 
-This phase intentionally does **not** create:
+DR here verifies artifact distribution and is on the same plan/region. It does not validate regional disaster recovery.
 
-- PROD deployment slots
-- VNet / Private Endpoint / Private DNS
-- self-hosted agents
-- Application Insights / Log Analytics
-- Key Vault
-- Front Door / Application Gateway
+## Bootstrap
 
-The purpose is to validate the CI/CD flow with Microsoft-hosted agents at minimum cost.
-
-Each app receives a runtime `APP_ENV` setting so the pipeline can distinguish the target environment.
-
-## Validate
+Set `expiresOn` in `poc.bicepparam` to today's date in Japan, then validate and preview:
 
 ```bash
 az bicep build --file infra/main.bicep
+az deployment sub validate --location japanwest --name cicd-demo-poc --template-file infra/main.bicep --parameters infra/poc.bicepparam
+az deployment sub what-if --location japanwest --name cicd-demo-poc --template-file infra/main.bicep --parameters infra/poc.bicepparam
+az deployment sub create --location japanwest --name cicd-demo-poc --template-file infra/main.bicep --parameters infra/poc.bicepparam
 ```
 
-## Preview
+The subscription bootstrap creates the group. After configuring `sc-cicd-infra` with Contributor on this group only, run `pipelines/infra.yml` manually. It validates, previews and reconciles `app-service.bicep`, and publishes the generated names/URLs as the `infra` artifact. It refuses a group without today's disposable PoC tags. Update the Release variables from the deployment outputs.
+
+## Release
+
+Use `pipelines/release.yml` with Microsoft-hosted `ubuntu-24.04` deployment jobs. The production self-hosted pool remains commented beside each deployment job. Keep human UAT validation and the PROD service-connection approval enabled. This disposable single-user PoC permits approval by the initiating user; restore the documented production setting before real use.
+
+## Same-day cleanup
+
+After recording Run IDs, artifact identity and results, delete the entire PoC group. This also deletes managed identities placed inside the group, their federated credentials and their resource-scoped Azure permissions. Remove their temporary Azure DevOps membership and service connections separately.
 
 ```bash
-az deployment sub what-if \
-  --location japanwest \
-  --name cicd-demo-poc \
-  --template-file infra/main.bicep \
-  --parameters infra/poc.bicepparam
+az group show --name rg-cicd-demo-poc-jpw --query tags
+az group delete --name rg-cicd-demo-poc-jpw --yes
+az group exists --name rg-cicd-demo-poc-jpw
 ```
 
-## Deploy
+The last command must return `false`. An expiry tag alone does not delete resources. Do not fall back to leaving an idle S1 plan or downgrading to F1; delete the resources that same day.
 
-```bash
-az deployment sub create \
-  --location japanwest \
-  --name cicd-demo-poc \
-  --template-file infra/main.bicep \
-  --parameters infra/poc.bicepparam
-```
+## Previous phase
 
-Show the generated Web App names and URLs:
-
-```bash
-az deployment sub show \
-  --name cicd-demo-poc \
-  --query properties.outputs \
-  --output json
-```
-
-## Delete after the PoC
-
-The Resource Group exists only for this PoC. Delete the whole group when the validation is complete so the App Service Plan stops incurring cost.
-
-```bash
-az group delete \
-  --name rg-cicd-demo-poc-jpw \
-  --yes
-```
-
-## Phase 2
-
-Only after the public/Microsoft-hosted flow is proven:
-
-1. upgrade the App Service Plan to a SKU that supports slots;
-2. add the PROD staging slot;
-3. validate staging deploy -> smoke -> swap -> production smoke;
-4. add PROD/staging Private Endpoints and Private DNS;
-5. temporarily add a self-hosted agent and validate App + SCM private deployment paths;
-6. delete the temporary resources or return to F1 after the test.
-
-
-## Verified PoC result
-
-Verified on 2026-09-20 through a temporary GitHub Actions runner using Azure OIDC:
-
-- Japan West
-- Linux App Service Plan F1
-- 4 Web Apps on the same plan: DEV / UAT / PROD / DR
-- all four apps reached Running state
-- `APP_ENV` matched each environment
-- `SCM_DO_BUILD_DURING_DEPLOYMENT=false` was confirmed
-- the disposable Resource Group was deleted and deletion was verified
-
-For this subscription, Japan East preflight validation reported zero F1/B1 App Service quota, so the proven Phase 1 default is Japan West/F1.
+On 2026-09-20 the F1 four-app bootstrap succeeded in Japan West and was deleted. This S1 phase adds PROD staging to validate deploy, smoke, swap, tag and DR. Private networking was explicitly excluded from this test.
