@@ -21,13 +21,15 @@ steps:
       azureSubscription: ${{ parameters.connection }}
       appType: webAppLinux
       appName: ${{ parameters.app }}
+      # Supply the group even for production to avoid subscription-wide discovery.
+      # This lets the connection use Website Contributor on the app only.
+      resourceGroupName: ${{ parameters.group }}
       package: $(Pipeline.Workspace)/release/webapp.zip
       deploymentMethod: zipDeploy
       runtimeStack: 'NODE|22-lts'
       startUpCommand: 'HOSTNAME=0.0.0.0 node server.js'
       ${{ if ne(parameters.slot, 'production') }}:
         deployToSlotOrASE: true
-        resourceGroupName: ${{ parameters.group }}
         slotName: ${{ parameters.slot }}
   - bash: python3 pipelines/scripts/smoke.py "$TARGET_URL" "$ARTIFACT_DIR/release.json" "$TARGET_ENV"
     displayName: Verify ${{ parameters.environment }} health and artifact identity

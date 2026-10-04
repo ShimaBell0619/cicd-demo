@@ -19,6 +19,8 @@
 
 IdentityはPoCグループ内のUser-assigned Managed Identityとし、WIFで接続する。全PipelineへのOpen accessは許可しない。prod接続は人間のApprovalとExclusive lock、dev/uat/dr環境はExclusive lockを使用する。Branch controlの許可候補はrelease/hotfix、Infraはmain。承認・接続の権限境界を本番対応済みとするには `setup.md` の追加検証が必要。
 
+今回のBranch controlは許可ブランチ名を検証し、branch protectionの必須化は行わない。GitHubからのミラーを使う個人PoCの条件であり、必須レビュー・保護必須・一般開発者の権限拒否の本番検証は未実証として記録する。配布処理にはResource Groupを明示し、Subscription全体のリソース探索を行わない。
+
 ## 実行順
 
 1. Bicepのvalidate/what-ifを実行し、専用Groupをbootstrapする。
