@@ -1,0 +1,27 @@
+# Read-only negative RBAC checks on the real Self-hosted Agent.
+trigger: none
+pr: none
+pool:
+  name: cicd-selfhosted-linux
+  demands:
+    - Agent.Name -equals vm-cicd-sh-agent
+steps:
+  - checkout: none
+  - task: AzureCLI@2
+    displayName: DEV WIF must read DEV and be denied other Apps and VM
+    inputs:
+      azureSubscription: sc-cicd-sh-dev
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        python3 - <<'PYCODE'
+        import json,subprocess
+        base='https://management.azure.com/subscriptions/82615ba2-5bd4-401d-b054-50df1e0e0333/resourceGroups/rg-cicd-selfhosted-jpw/providers/'
+        targets=[('DEV','Microsoft.Web/sites/app-cicd-sh-dev-qjykmbw33p6b4?api-version=2023-12-01',True),('UAT','Microsoft.Web/sites/app-cicd-sh-uat-qjykmbw33p6b4?api-version=2023-12-01',False),('PROD','Microsoft.Web/sites/app-cicd-sh-prod-qjykmbw33p6b4?api-version=2023-12-01',False),('DR','Microsoft.Web/sites/app-cicd-sh-dr-qjykmbw33p6b4?api-version=2023-12-01',False),('VM','Microsoft.Compute/virtualMachines/vm-cicd-sh-agent?api-version=2024-07-01',False)]
+        for label,path,allowed in targets:
+            r=subprocess.run(['az','rest','--method','get','--url',base+path,'-o','json'],capture_output=True,text=True)
+            if allowed: assert r.returncode==0,(label,r.stderr[:300])
+            else: assert r.returncode!=0 and 'AuthorizationFailed' in r.stderr,(label,r.stderr[:300])
+            print(label,'allowed' if allowed else 'AuthorizationFailed as expected')
+        PYCODE

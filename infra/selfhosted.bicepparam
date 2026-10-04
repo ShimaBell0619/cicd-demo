@@ -1,0 +1,6 @@
+using './main.bicep'
+param location = 'japanwest'
+param resourceGroupName = 'rg-cicd-selfhosted-jpw'
+param namePrefix = 'cicd-sh'
+param skuName = 'S1'
+param lifecycle = 'retained'

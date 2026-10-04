@@ -8,8 +8,11 @@ param namePrefix string
 @allowed(['S1'])
 param skuName string = 'S1'
 
-@description('Delete all PoC resources on this Japan-local calendar date.')
-param expiresOn string
+@description('Optional Japan-local expiry date for disposable resources; empty for retained validation.')
+param expiresOn string = ''
+
+@allowed(['disposable', 'retained'])
+param lifecycle string = 'disposable'
 
 var environments = [
   'dev'
@@ -20,11 +23,10 @@ var environments = [
 
 var uniqueSuffix = uniqueString(resourceGroup().id)
 var appServicePlanName = 'asp-${namePrefix}'
-var commonTags = {
+var commonTags = union({
   purpose: 'cicd-poc'
-  lifecycle: 'disposable'
-  expiresOn: expiresOn
-}
+  lifecycle: lifecycle
+}, empty(expiresOn) ? {} : { expiresOn: expiresOn })
 
 var runtimeConfig = {
   linuxFxVersion: 'NODE|22-lts'

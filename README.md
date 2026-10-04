@@ -1,5 +1,7 @@
 # cicd-demo
 
+現在の検証は専用RG `rg-cicd-selfhosted-jpw` とSelf-hosted Linux Agentを使用します。Web App/VM/Bastion Developerは保持します。[検証台帳・完了条件](docs/selfhosted-validation.md)、[復旧Pipeline](pipelines/recovery-selfhosted.yml)を参照してください。旧S1 PoCの成果物とTagは保持されています。
+
 **Azure Repos Git + Azure Pipelines で、1回作った ZIP を DEV → UAT → PROD → DR へ配布する PoC です。**
 GitHub は設計・実装用のミラーです。今回の使い捨てPoCはStandard S1とPublic経由で検証します。
 

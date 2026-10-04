@@ -1,43 +1,38 @@
-# The subscription bootstrap (infra/main.bicep) creates the disposable group.
+# The subscription bootstrap (infra/main.bicep) creates the dedicated retained group.
 # This pipeline uses Contributor scoped to that group only.
 name: infra-$(Date:yyyyMMdd).$(Rev:r)
 trigger: none
 pr: none
 
-parameters:
-  - name: expiresOn
-    displayName: Delete resources on this Japan-local date (YYYY-MM-DD)
-    type: string
-    default: '2026-10-04'
-
 pool:
-  vmImage: ubuntu-24.04
+  name: cicd-selfhosted-linux
+  demands:
+    - Agent.OS -equals Linux
+    - Agent.Name -equals vm-cicd-sh-agent
 
 variables:
-  resourceGroup: rg-cicd-demo-poc-jpw
+  resourceGroup: rg-cicd-selfhosted-jpw
   location: japanwest
-  namePrefix: cicd-demo-poc
+  namePrefix: cicd-sh
 
 steps:
   - checkout: self
     clean: true
     persistCredentials: false
   - task: AzureCLI@2
-    displayName: Validate, preview and provision disposable S1 environment
+    displayName: Validate, preview and provision retained S1 environment
     inputs:
-      azureSubscription: sc-cicd-infra
+      azureSubscription: sc-cicd-sh-infra
       scriptType: bash
       scriptLocation: inlineScript
       inlineScript: |
         set -euo pipefail
         [[ "$BUILD_REASON" == Manual ]] || { echo 'Start infrastructure manually.' >&2; exit 1; }
-        today="$(TZ=Asia/Tokyo date +%F)"
-        [[ "$EXPIRES_ON" == "$today" ]] || { echo 'Expiry must be today in Japan.' >&2; exit 1; }
         az group show -n "$RESOURCE_GROUP" --query tags -o json > /tmp/poc-group-tags.json
-        python3 -c 'import json,os; t=json.load(open("/tmp/poc-group-tags.json")); assert t.get("purpose")=="cicd-poc" and t.get("lifecycle")=="disposable" and t.get("expiresOn")==os.environ["EXPIRES_ON"], "Group is not the disposable PoC for today"'
+        python3 -c 'import json; t=json.load(open("/tmp/poc-group-tags.json")); assert t.get("workload")=="selfhosted-validation" and t.get("lifecycle")=="retained", "Wrong validation group"'
         az bicep build --file infra/app-service.bicep --outfile /tmp/app-service.json
         args=(--resource-group "$RESOURCE_GROUP" --template-file /tmp/app-service.json
-          --parameters location="$LOCATION" namePrefix="$NAME_PREFIX" skuName=S1 expiresOn="$EXPIRES_ON")
+          --parameters location="$LOCATION" namePrefix="$NAME_PREFIX" skuName=S1 lifecycle=retained expiresOn='')
         az deployment group validate "${args[@]}" --only-show-errors
         az deployment group what-if "${args[@]}" --only-show-errors
         az deployment group create "${args[@]}" --name "cicd-infra-$BUILD_BUILDID" --only-show-errors
@@ -47,7 +42,6 @@ steps:
       RESOURCE_GROUP: $(resourceGroup)
       LOCATION: $(location)
       NAME_PREFIX: $(namePrefix)
-      EXPIRES_ON: ${{ parameters.expiresOn }}
   - publish: $(Build.ArtifactStagingDirectory)/infra
     artifact: infra
     displayName: Preserve created resource names and URLs

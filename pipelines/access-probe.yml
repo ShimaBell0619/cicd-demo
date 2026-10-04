@@ -1,0 +1,26 @@
+# Intentionally NOT authorized for the deployment Pool or WIF connections.
+trigger: none
+pr: none
+parameters:
+  - name: mode
+    type: string
+    default: pool
+    values: [pool, connection]
+jobs:
+  - job: MustBeDenied
+    ${{ if eq(parameters.mode, 'pool') }}:
+      pool:
+        name: cicd-selfhosted-linux
+    ${{ else }}:
+      pool:
+        vmImage: ubuntu-24.04
+    steps:
+      - checkout: none
+      - ${{ if eq(parameters.mode, 'connection') }}:
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: sc-cicd-sh-dev
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: 'exit 1'
+      - bash: 'echo Unexpected unauthorized agent access; exit 1'

@@ -9,23 +9,30 @@ parameters:
     displayName: First deployment only (PROD is empty and no vX.Y.Z tags exist)
     type: boolean
     default: false
+  # Dedicated validation hooks. Keep false for normal releases.
+  - name: pocHoldBeforeDR
+    type: boolean
+    default: false
+  - name: pocFailBeforeDR
+    type: boolean
+    default: false
 
 # Configure these values once. Service connection names below are literal on purpose.
 variables:
   RELEASE_BUILD: 'true'
-  devApp: app-cicd-demo-poc-dev-flosex3ojhb5q
-  devGroup: rg-cicd-demo-poc-jpw
-  devUrl: https://app-cicd-demo-poc-dev-flosex3ojhb5q.azurewebsites.net
-  uatApp: app-cicd-demo-poc-uat-flosex3ojhb5q
-  uatGroup: rg-cicd-demo-poc-jpw
-  uatUrl: https://app-cicd-demo-poc-uat-flosex3ojhb5q.azurewebsites.net
-  prodApp: app-cicd-demo-poc-prod-flosex3ojhb5q
-  prodGroup: rg-cicd-demo-poc-jpw
-  prodUrl: https://app-cicd-demo-poc-prod-flosex3ojhb5q.azurewebsites.net
-  stagingUrl: https://app-cicd-demo-poc-prod-flosex3ojhb5q-staging.azurewebsites.net
-  drApp: app-cicd-demo-poc-dr-flosex3ojhb5q
-  drGroup: rg-cicd-demo-poc-jpw
-  drUrl: https://app-cicd-demo-poc-dr-flosex3ojhb5q.azurewebsites.net
+  devApp: app-cicd-sh-dev-qjykmbw33p6b4
+  devGroup: rg-cicd-selfhosted-jpw
+  devUrl: https://app-cicd-sh-dev-qjykmbw33p6b4.azurewebsites.net
+  uatApp: app-cicd-sh-uat-qjykmbw33p6b4
+  uatGroup: rg-cicd-selfhosted-jpw
+  uatUrl: https://app-cicd-sh-uat-qjykmbw33p6b4.azurewebsites.net
+  prodApp: app-cicd-sh-prod-qjykmbw33p6b4
+  prodGroup: rg-cicd-selfhosted-jpw
+  prodUrl: https://app-cicd-sh-prod-qjykmbw33p6b4.azurewebsites.net
+  stagingUrl: https://app-cicd-sh-prod-qjykmbw33p6b4-staging.azurewebsites.net
+  drApp: app-cicd-sh-dr-qjykmbw33p6b4
+  drGroup: rg-cicd-selfhosted-jpw
+  drUrl: https://app-cicd-sh-dr-qjykmbw33p6b4.azurewebsites.net
   uatApprovers: shimaoka0619@gmail.com
 
 stages:
@@ -50,12 +57,15 @@ stages:
     lockBehavior: sequential
     jobs:
       - deployment: DeployDEV
-        environment: dev
+        environment: sh-dev
         pool:
-          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
-        # Production/private endpoint path: replace the active pool above with:
+          name: cicd-selfhosted-linux
+          demands:
+            - Agent.OS -equals Linux
+            - Agent.Name -equals vm-cicd-sh-agent
+        # Microsoft-hosted alternative for Public endpoints:
         # pool:
-        #   name: deploy-private-linux
+        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -74,23 +84,26 @@ stages:
                     ARTIFACT_DIR: $(Pipeline.Workspace)/release
                 - template: templates/deploy.yml
                   parameters:
-                    connection: sc-cicd-dev
+                    connection: sc-cicd-sh-dev
                     app: $(devApp)
                     group: $(devGroup)
                     url: $(devUrl)
-                    environment: dev
+                    environment: sh-dev
 
   - stage: UAT
     dependsOn: DEV
     lockBehavior: sequential
     jobs:
       - deployment: DeployUAT
-        environment: uat
+        environment: sh-uat
         pool:
-          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
-        # Production/private endpoint path: replace the active pool above with:
+          name: cicd-selfhosted-linux
+          demands:
+            - Agent.OS -equals Linux
+            - Agent.Name -equals vm-cicd-sh-agent
+        # Microsoft-hosted alternative for Public endpoints:
         # pool:
-        #   name: deploy-private-linux
+        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -109,11 +122,11 @@ stages:
                     ARTIFACT_DIR: $(Pipeline.Workspace)/release
                 - template: templates/deploy.yml
                   parameters:
-                    connection: sc-cicd-uat
+                    connection: sc-cicd-sh-uat
                     app: $(uatApp)
                     group: $(uatGroup)
                     url: $(uatUrl)
-                    environment: uat
+                    environment: sh-uat
       # Same stage: UAT stays locked while a person tests this exact artifact.
       - job: AcceptUAT
         dependsOn: DeployUAT
@@ -125,7 +138,7 @@ stages:
             inputs:
               notifyUsers: $(uatApprovers)
               approvers: $(uatApprovers)
-              allowApproversToApproveTheirOwnRuns: true # Disposable PoC only; production must use false.
+              allowApproversToApproveTheirOwnRuns: true # Dedicated validation only; user authorized on 2026-10-04.
               onTimeout: reject
               instructions: |
                 Run $(Build.BuildId), $(Build.SourceBranch), SHA $(Build.SourceVersion).
@@ -144,12 +157,15 @@ stages:
     lockBehavior: sequential
     jobs:
       - deployment: Production
-        environment: prod
+        environment: sh-prod
         pool:
-          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
-        # Production/private endpoint path: replace the active pool above with:
+          name: cicd-selfhosted-linux
+          demands:
+            - Agent.OS -equals Linux
+            - Agent.Name -equals vm-cicd-sh-agent
+        # Microsoft-hosted alternative for Public endpoints:
         # pool:
-        #   name: deploy-private-linux
+        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -172,7 +188,7 @@ stages:
                     FIRST_RELEASE: ${{ parameters.firstProductionRelease }}
                 - template: templates/deploy.yml
                   parameters:
-                    connection: sc-cicd-prod
+                    connection: sc-cicd-sh-prod
                     app: $(prodApp)
                     group: $(prodGroup)
                     url: $(stagingUrl)
@@ -187,7 +203,7 @@ stages:
                 - task: AzureAppServiceManage@0
                   displayName: Swap staging into production
                   inputs:
-                    azureSubscription: sc-cicd-prod
+                    azureSubscription: sc-cicd-sh-prod
                     Action: Swap Slots
                     WebAppName: $(prodApp)
                     ResourceGroupName: $(prodGroup)
@@ -202,21 +218,41 @@ stages:
                   displayName: Tag the successfully deployed artifact
                   inputs:
                     connectionType: azureDevOps
-                    azureDevOpsServiceConnection: sc-cicd-tags
+                    azureDevOpsServiceConnection: sc-cicd-sh-tags
                     scriptType: bash
                     scriptLocation: inlineScript
                     inlineScript: python3 pipelines/scripts/promote.py tag "$ARTIFACT_DIR"
                   env:
                     ARTIFACT_DIR: $(Pipeline.Workspace)/release
 
+      - ${{ if eq(parameters.pocHoldBeforeDR, true) }}:
+          - job: HoldBeforeDR
+            dependsOn: Production
+            pool: server
+            timeoutInMinutes: 120
+            steps:
+              - task: ManualValidation@1
+                timeoutInMinutes: 110
+                inputs:
+                  notifyUsers: $(uatApprovers)
+                  approvers: $(uatApprovers)
+                  allowApproversToApproveTheirOwnRuns: true
+                  onTimeout: reject
+                  instructions: 'Validation C02: hold PROD lock after Tag while DR is pending; record competing Release check/health, cancel competitor, then Resume.'
       - deployment: DisasterRecovery
-        dependsOn: Production
-        environment: dr
+        ${{ if eq(parameters.pocHoldBeforeDR, true) }}:
+          dependsOn: HoldBeforeDR
+        ${{ else }}:
+          dependsOn: Production
+        environment: sh-dr
         pool:
-          vmImage: ubuntu-24.04 # PoC: deploy through the Public endpoint.
-        # Production/private endpoint path: replace the active pool above with:
+          name: cicd-selfhosted-linux
+          demands:
+            - Agent.OS -equals Linux
+            - Agent.Name -equals vm-cicd-sh-agent
+        # Microsoft-hosted alternative for Public endpoints:
         # pool:
-        #   name: deploy-private-linux
+        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -237,10 +273,15 @@ stages:
                   env:
                     PROD_URL: $(prodUrl)
                     ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                - ${{ if eq(parameters.pocFailBeforeDR, true) }}:
+                    - bash: |
+                        echo 'Intentional validation G01 failure before DR write; PROD and Tag remain complete.'
+                        exit 1
+                      displayName: Intentional DR-boundary failure for recovery validation
                 - template: templates/deploy.yml
                   parameters:
-                    connection: sc-cicd-dr
+                    connection: sc-cicd-sh-dr
                     app: $(drApp)
                     group: $(drGroup)
                     url: $(drUrl)
-                    environment: dr
+                    environment: sh-dr

@@ -13,17 +13,16 @@ param namePrefix string = 'cicd-demo-poc'
 @allowed(['S1'])
 param skuName string = 'S1'
 
-@description('Delete all PoC resources on this Japan-local calendar date.')
-param expiresOn string
+@description('Optional Japan-local expiry date for disposable resources; empty for retained validation.')
+param expiresOn string = ''
+
+@allowed(['disposable', 'retained'])
+param lifecycle string = 'disposable'
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: resourceGroupName
   location: location
-  tags: {
-    purpose: 'cicd-poc'
-    lifecycle: 'disposable'
-    expiresOn: expiresOn
-  }
+  tags: union({ purpose: 'cicd-poc', lifecycle: lifecycle }, empty(expiresOn) ? {} : { expiresOn: expiresOn })
 }
 
 module appService './app-service.bicep' = {
@@ -34,6 +33,7 @@ module appService './app-service.bicep' = {
     namePrefix: namePrefix
     skuName: skuName
     expiresOn: expiresOn
+    lifecycle: lifecycle
   }
 }
 

@@ -1,0 +1,171 @@
+# Exact retained-Artifact recovery. No Build and no Tag write.
+name: recovery-$(Date:yyyyMMdd).$(Rev:r)
+trigger: none
+pr: none
+parameters:
+  - name: mode
+    type: string
+    default: dr-only
+    values: [bootstrap, rollback, dr-only]
+  - name: sourcePipeline
+    type: string
+    default: '14'
+  - name: sourceRun
+    type: string
+    default: '43'
+  - name: expectedCurrentRun
+    type: string
+    default: '0'
+variables:
+  devApp: app-cicd-sh-dev-qjykmbw33p6b4
+  uatApp: app-cicd-sh-uat-qjykmbw33p6b4
+  prodApp: app-cicd-sh-prod-qjykmbw33p6b4
+  drApp: app-cicd-sh-dr-qjykmbw33p6b4
+  devUrl: https://app-cicd-sh-dev-qjykmbw33p6b4.azurewebsites.net
+  uatUrl: https://app-cicd-sh-uat-qjykmbw33p6b4.azurewebsites.net
+  prodUrl: https://app-cicd-sh-prod-qjykmbw33p6b4.azurewebsites.net
+  drUrl: https://app-cicd-sh-dr-qjykmbw33p6b4.azurewebsites.net
+  resourceGroup: rg-cicd-selfhosted-jpw
+  stagingUrl: https://app-cicd-sh-prod-qjykmbw33p6b4-staging.azurewebsites.net
+
+stages:
+  - stage: Recover
+    lockBehavior: sequential
+    jobs:
+      - deployment: ProductionRecovery
+        environment: sh-prod
+        pool:
+          name: cicd-selfhosted-linux
+          demands:
+            - Agent.OS -equals Linux
+            - Agent.Name -equals vm-cicd-sh-agent
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  persistCredentials: false
+                - download: none
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download exact selected original Run artifact
+                  inputs:
+                    buildType: specific
+                    project: ade42bec-e012-4b12-ac1f-cbdac4c53877
+                    definition: ${{ parameters.sourcePipeline }}
+                    buildVersionToDownload: specific
+                    pipelineId: ${{ parameters.sourceRun }}
+                    allowFailedBuilds: true
+                    artifactName: release
+                    targetPath: $(Pipeline.Workspace)/release
+                # Referencing the PROD connection holds its existing approval/lock through DR.
+                # This task reads only. dr-only compiles no PROD deploy or swap task.
+                - task: AzureCLI@2
+                  displayName: Verify selected Run, ZIP, Tag and expected current PROD under lock
+                  inputs:
+                    azureSubscription: sc-cicd-sh-prod
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: python3 pipelines/scripts/recovery.py before-prod "$ARTIFACT_DIR" "$PROD_URL"
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                    PROD_URL: $(prodUrl)
+                    SELECTED_PIPELINE: ${{ parameters.sourcePipeline }}
+                    SELECTED_RUN: ${{ parameters.sourceRun }}
+                    RECOVERY_MODE: ${{ parameters.mode }}
+                    EXPECTED_CURRENT_RUN: ${{ parameters.expectedCurrentRun }}
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                - ${{ if eq(parameters.mode, 'bootstrap') }}:
+                    - template: templates/deploy.yml
+                      parameters:
+                        connection: sc-cicd-sh-dev
+                        app: $(devApp)
+                        group: $(resourceGroup)
+                        url: $(devUrl)
+                        environment: dev
+                    - template: templates/deploy.yml
+                      parameters:
+                        connection: sc-cicd-sh-uat
+                        app: $(uatApp)
+                        group: $(resourceGroup)
+                        url: $(uatUrl)
+                        environment: uat
+                - ${{ if ne(parameters.mode, 'dr-only') }}:
+                    - template: templates/deploy.yml
+                      parameters:
+                        connection: sc-cicd-sh-prod
+                        app: $(prodApp)
+                        group: $(resourceGroup)
+                        url: $(stagingUrl)
+                        environment: prod-staging
+                        slot: staging
+                    - bash: python3 pipelines/scripts/recovery.py before-prod "$ARTIFACT_DIR" "$PROD_URL"
+                      displayName: Recheck expected current PROD immediately before swap
+                      env:
+                        ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                        PROD_URL: $(prodUrl)
+                        SELECTED_PIPELINE: ${{ parameters.sourcePipeline }}
+                        SELECTED_RUN: ${{ parameters.sourceRun }}
+                        RECOVERY_MODE: ${{ parameters.mode }}
+                        EXPECTED_CURRENT_RUN: ${{ parameters.expectedCurrentRun }}
+                        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                    - task: AzureAppServiceManage@0
+                      displayName: Swap selected retained Artifact from staging
+                      inputs:
+                        azureSubscription: sc-cicd-sh-prod
+                        Action: Swap Slots
+                        WebAppName: $(prodApp)
+                        ResourceGroupName: $(resourceGroup)
+                        SourceSlot: staging
+                        SwapWithProduction: true
+                    - bash: python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
+                      displayName: Verify restored production identity
+                      env:
+                        PROD_URL: $(prodUrl)
+                        ARTIFACT_DIR: $(Pipeline.Workspace)/release
+      - deployment: DRRecovery
+        dependsOn: ProductionRecovery
+        environment: sh-dr
+        pool:
+          name: cicd-selfhosted-linux
+          demands:
+            - Agent.OS -equals Linux
+            - Agent.Name -equals vm-cicd-sh-agent
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  persistCredentials: false
+                - download: none
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download same exact original Run artifact for DR
+                  inputs:
+                    buildType: specific
+                    project: ade42bec-e012-4b12-ac1f-cbdac4c53877
+                    definition: ${{ parameters.sourcePipeline }}
+                    buildVersionToDownload: specific
+                    pipelineId: ${{ parameters.sourceRun }}
+                    allowFailedBuilds: true
+                    artifactName: release
+                    targetPath: $(Pipeline.Workspace)/release
+                - bash: python3 pipelines/scripts/recovery.py before-dr "$ARTIFACT_DIR" "$PROD_URL"
+                  displayName: Verify selected Artifact is still current PROD before DR write
+                  env:
+                    ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                    PROD_URL: $(prodUrl)
+                    SELECTED_PIPELINE: ${{ parameters.sourcePipeline }}
+                    SELECTED_RUN: ${{ parameters.sourceRun }}
+                    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                - template: templates/deploy.yml
+                  parameters:
+                    connection: sc-cicd-sh-dr
+                    app: $(drApp)
+                    group: $(resourceGroup)
+                    url: $(drUrl)
+                    environment: dr
