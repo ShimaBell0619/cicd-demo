@@ -1,0 +1,71 @@
+# Disposable PoC recovery only. Reuses Run 43 ZIP; never builds or swaps PROD.
+name: recover-run43-$(Date:yyyyMMdd).$(Rev:r)
+trigger: none
+pr: none
+
+jobs:
+  - deployment: RecoverTagAndDR
+    displayName: Complete Run 43 tag and DR only
+    environment: dr
+    pool:
+      vmImage: ubuntu-24.04
+    workspace:
+      clean: all
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+              clean: true
+              persistCredentials: false
+            - download: none
+            - task: DownloadPipelineArtifact@2
+              displayName: Download exact retained Run 43 artifact
+              inputs:
+                buildType: specific
+                project: ade42bec-e012-4b12-ac1f-cbdac4c53877
+                definition: '14'
+                buildVersionToDownload: specific
+                pipelineId: '43'
+                allowFailedBuilds: true
+                artifactName: release
+                targetPath: $(Pipeline.Workspace)/release
+            - bash: |
+                set -euo pipefail
+                [[ "$BUILD_REASON" == Manual ]]
+                python3 pipelines/scripts/artifact.py verify "$ARTIFACT_DIR"
+                python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
+              displayName: Verify Run 43 ZIP and current PROD
+              env:
+                RELEASE_BUILD: 'true'
+                BUILD_SOURCEBRANCH: refs/heads/release/1.0.0
+                BUILD_SOURCEVERSION: 5fb8464833440843e87d9705960b231e6772e202
+                BUILD_BUILDID: '43'
+                ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                PROD_URL: https://app-cicd-demo-poc-prod-flosex3ojhb5q.azurewebsites.net
+            - task: AzureCLI@3
+              displayName: Create original Run 43 success tag with tag-only WIF
+              inputs:
+                connectionType: azureDevOps
+                azureDevOpsServiceConnection: sc-cicd-tags
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: python3 pipelines/scripts/promote.py tag "$ARTIFACT_DIR"
+              env:
+                RELEASE_BUILD: 'true'
+                BUILD_SOURCEBRANCH: refs/heads/release/1.0.0
+                BUILD_SOURCEVERSION: 5fb8464833440843e87d9705960b231e6772e202
+                BUILD_BUILDID: '43'
+                ARTIFACT_DIR: $(Pipeline.Workspace)/release
+            - bash: python3 pipelines/scripts/smoke.py "$PROD_URL" "$ARTIFACT_DIR/release.json" prod
+              displayName: Recheck current PROD before DR
+              env:
+                ARTIFACT_DIR: $(Pipeline.Workspace)/release
+                PROD_URL: https://app-cicd-demo-poc-prod-flosex3ojhb5q.azurewebsites.net
+            - template: templates/deploy.yml
+              parameters:
+                connection: sc-cicd-dr
+                app: app-cicd-demo-poc-dr-flosex3ojhb5q
+                group: rg-cicd-demo-poc-jpw
+                url: https://app-cicd-demo-poc-dr-flosex3ojhb5q.azurewebsites.net
+                environment: dr
