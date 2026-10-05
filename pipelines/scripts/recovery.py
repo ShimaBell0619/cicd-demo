@@ -4,7 +4,6 @@ import os
 import re
 import sys
 import urllib.request
-from pathlib import Path
 
 from artifact import verify
 from promote import verify_tag_response
@@ -43,31 +42,26 @@ def selected(directory):
 def before_production(directory, url):
     metadata = selected(directory)
     mode = os.environ['RECOVERY_MODE']
-    if mode != 'dr-only' and os.environ.get('SYSTEM_STAGEATTEMPT', '1') != '1':
+    if mode not in ('rollback', 'dr-only'):
+        raise ValueError('Unknown recovery mode')
+    if not re.fullmatch(r'[1-9][0-9]*', os.environ['EXPECTED_CURRENT_RUN']):
+        raise ValueError('Select the expected current PROD Run ID explicitly')
+    if mode == 'rollback' and os.environ.get('SYSTEM_STAGEATTEMPT', '1') != '1':
         raise ValueError('Do not retry a stage that can swap PROD')
     try:
         current = read_health(url)
     except (OSError, ValueError):
-        if (mode == 'bootstrap' and os.environ['EXPECTED_CURRENT_RUN'] == '0'
-                and metadata['buildId'] == '43' and metadata['version'] == '1.0.0'
-                and 'app-cicd-sh-prod-' in url):
-            print('Approved bootstrap of dedicated empty PROD from original Run 43')
-            return
         raise ValueError('Cannot read current PROD identity') from None
     if (current.get('status') != 'ok' or current.get('environment') != 'prod'
             or current.get('service') != 'cicd-demo-nextjs'
             or current.get('buildId') != os.environ['EXPECTED_CURRENT_RUN']):
         raise ValueError('Current PROD differs from the operator-selected expected Run')
-    if mode == 'bootstrap':
-        raise ValueError('Bootstrap requires an empty dedicated PROD')
     if mode == 'dr-only':
         if any(current.get(key) != metadata[key] for key in ['version', 'commitSha', 'buildId']):
             raise ValueError('DR recovery Artifact is not current PROD')
     elif mode == 'rollback':
         if current['buildId'] == metadata['buildId']:
             raise ValueError('PROD is already the rollback Run; do not swap twice')
-    else:
-        raise ValueError('Unknown recovery mode')
     print('Recovery current-PROD guard passed:', current['buildId'], mode)
 
 

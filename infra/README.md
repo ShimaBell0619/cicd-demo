@@ -1,47 +1,27 @@
-# Disposable S1 CI/CD PoC
+# インフラとAgent
 
-This PoC uses Japan West and deletes its Azure resources on the day of the test.
+保持する専用検証環境を定義する。RGは`rg-cicd-selfhosted-jpw`、Japan West。S1をDEV / UAT / PROD / DRとPROD stagingで共有する。Public endpointを使用し、Private Endpointは作成しない。
 
-## Resources
+## 定義の役割
 
-- One disposable resource group: `rg-cicd-demo-poc-jpw`.
-- One Linux Standard S1 App Service Plan, shared by DEV/UAT/PROD/DR and PROD staging.
-- Four Web Apps and the PROD `staging` deployment slot.
-- Public App/SCM endpoints, HTTPS, TLS 1.2, Node.js 22, build-on-deploy disabled.
-- `APP_ENV` is fixed to each environment. PROD marks it as a slot setting.
-- No Private Endpoint, Private DNS or self-hosted agent is provisioned.
+| ファイル | 役割 |
+|---|---|
+| [main.bicep](main.bicep) / [selfhosted.bicepparam](selfhosted.bicepparam) | subscription scopeで専用RGを作成し、App Serviceを構築する初期用定義 |
+| [app-service.bicep](app-service.bicep) | RG内のS1 Plan、4 Web Apps、PROD staging、固定APP_ENV、Node 22設定 |
+| [agent.bicep](agent.bicep) | Ubuntu Agent VM、VNet / NSG / NIC / 送信用Public IP、Bastion Developer |
+| [configure-agent.sh](configure-agent.sh) | 初回登録専用。Agent digest照合、短期Entra tokenで登録、非rootサービス化 |
+| [infra.yml](../pipelines/infra.yml) | RG scopeのInfra WIFでApp Serviceだけをvalidate / what-if / apply |
 
-DR here verifies artifact distribution and is on the same plan/region. It does not validate regional disaster recovery.
+RGとApp Serviceには`lifecycle=retained`、`workload=selfhosted-validation`を設定する。Infra PipelineはこのRGタグを照合してから操作する。旧使い捨てPoCの期限・削除用プロファイルは削除した。
 
-## Bootstrap
+## 初期構築の順序
 
-Set `expiresOn` in `poc.bicepparam` to today's date in Japan, then validate and preview:
+1. 管理者がBicepをvalidate / what-ifし、`main.bicep`と`selfhosted.bicepparam`で専用RG / App Serviceを構築する。Infra接続の権限はRG内だけなので、RG自体の作成には使用しない。
+2. `agent.bicep`を専用RGへ適用する。`adminPassword`は安全な実行時入力で与え、パラメータファイル・Repo・ログへ保存しない。
+3. 専用PoolとVMのSystem-assigned Identityの登録用権限を用意し、VM Run Commandで`configure-agent.sh`を初回だけ実行する。登録済みVMの通常Infra更新では実行しない。
+4. 登録用のPool管理権限とAzure DevOpsへの登録用アクセスを除去し、Agentがオンラインであることを確認する。標準OAuth資格情報はAgentディレクトリで保護する。
+5. 環境別WIF、Pipelineごとの認可、Environment / PROD接続Checksを[設定](../docs/setup.md)に従って用意する。
 
-```bash
-az bicep build --file infra/main.bicep
-az deployment sub validate --location japanwest --name cicd-demo-poc --template-file infra/main.bicep --parameters infra/poc.bicepparam
-az deployment sub what-if --location japanwest --name cicd-demo-poc --template-file infra/main.bicep --parameters infra/poc.bicepparam
-az deployment sub create --location japanwest --name cicd-demo-poc --template-file infra/main.bicep --parameters infra/poc.bicepparam
-```
+Agent VMには配布用Managed Identityを割り当てず、Azure RBACを付けない。Internetからの受信は拒否し、管理はBastion Developerを使用する。VMのPublic IPはPublic App Service / SCMとAzure DevOpsへの送信に使用する。
 
-The subscription bootstrap creates the group. After configuring `sc-cicd-infra` with Contributor on this group only, run `pipelines/infra.yml` manually. It validates, previews and reconciles `app-service.bicep`, and publishes the generated names/URLs as the `infra` artifact. It refuses a group without today's disposable PoC tags. Update the Release variables from the deployment outputs.
-
-## Release
-
-Use `pipelines/release.yml` with Microsoft-hosted `ubuntu-24.04` deployment jobs. The production self-hosted pool remains commented beside each deployment job. Keep human UAT validation and the PROD service-connection approval enabled. This disposable single-user PoC permits approval by the initiating user; restore the documented production setting before real use.
-
-## Same-day cleanup
-
-After recording Run IDs, artifact identity and results, delete the entire PoC group. This also deletes managed identities placed inside the group, their federated credentials and their resource-scoped Azure permissions. Remove their temporary Azure DevOps membership and service connections separately.
-
-```bash
-az group show --name rg-cicd-demo-poc-jpw --query tags
-az group delete --name rg-cicd-demo-poc-jpw --yes
-az group exists --name rg-cicd-demo-poc-jpw
-```
-
-The last command must return `false`. An expiry tag alone does not delete resources. Do not fall back to leaving an idle S1 plan or downgrading to F1; delete the resources that same day.
-
-## Previous phase
-
-On 2026-09-20 the F1 four-app bootstrap succeeded in Japan West and was deleted. This S1 phase adds PROD staging to validate deploy, smoke, swap, tag and DR. Private networking was explicitly excluded from this test.
+Web Apps、VM、Bastionはユーザーの判断で残す。Bicepの更新やドキュメント整理だけではAzureへ自動適用せず、削除もしない。実際の変更時はwhat-ifを確認し、手動Infra Runで適用する。

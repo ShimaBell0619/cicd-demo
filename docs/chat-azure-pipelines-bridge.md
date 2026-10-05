@@ -1,71 +1,20 @@
-# Chat to Azure Pipelines Bridge
+# Issue経由のPipeline操作補助
 
-Bridge workflow:
-.github/workflows/azure-pipelines-bridge.yml
+既存[azure-pipelines-bridge.yml](../.github/workflows/azure-pipelines-bridge.yml)は、Repository ownerによる[Issue #1](https://github.com/ShimaBell0619/cicd-demo/issues/1)のコメントだけを受け付ける。PRコメントや他ユーザーからの操作は受け付けない。通常運用はAzure DevOps画面からも行える。
 
-Control issue:
-GitHub Issue #1 - Azure Pipelines Bridge Control
+GitHub ActionsのOIDC IdentityでAzure DevOps REST APIを呼び、結果を同じIssueへ返す。PATやAzure DevOps Service ConnectionをBridge用に保存しない。GitHub変数とIdentityは[ミラー](github-azure-repos-mirror.md)と共通。
 
-Flow:
+## 対応コマンド
 
-ChatGPT -> owner-only Issue comment -> GitHub Actions -> Microsoft Entra OIDC -> Azure DevOps REST API -> Azure Pipelines
-
-No PAT is stored.
-
-## GitHub repository variables
-
-Set these repository variables:
-
-- AZURE_CLIENT_ID
-- AZURE_TENANT_ID
-- AZURE_SUBSCRIPTION_ID
-
-Use the existing Microsoft Entra application/service principal already trusted by the GitHub OIDC configuration.
-
-## Azure DevOps setup
-
-The bridge itself does not need an Azure DevOps Service Connection.
-
-Add the same Microsoft Entra service principal to the Azure DevOps organization and target project.
-
-Recommended initial permissions:
-
-- View build pipeline
-- View builds
-- Queue builds
-
-Do not grant pipeline edit/delete/admin permissions or repository write/policy-bypass permissions.
-
-Use Basic access for predictable Azure Pipelines access.
-
-## Commands
-
-List pipelines:
-
+```text
 /ado-list <org> <project>
-
-Run:
-
 /ado-run <org> <project> <pipelineId> <refs/heads/...>
-
-First production release:
-
-/ado-run <org> <project> <pipelineId> <refs/heads/release/1.0.0> firstProductionRelease=true
-
-Status:
-
+/ado-run <org> <project> <pipelineId> <refs/heads/...> firstProductionRelease=true
 /ado-status <org> <project> <pipelineId> <runId>
+```
 
-Only OWNER comments on Issue #1 are accepted.
+現行のInfra / Release / Recovery定義IDは16 / 17 / 18。通常Releaseは`firstProductionRelease=false`（既定値）で起動する。BridgeにはUAT / PROD承認・却下操作やRecoveryのmode / 元Run / 現PROD指定を渡す機能はない。**RecoveryはAzure DevOps画面から明示入力して起動する**。
 
-## Separate Azure deployment Service Connections
+Azure DevOpsでは対象PipelineのView build pipeline / View builds / Queue buildsが必要。Pipeline編集・削除・管理、Checks変更、Pool管理の権限は付けない。ミラーで必要なRepo権限とは別に扱う。
 
-The current Release Pipeline still expects these when it actually deploys or creates a tag:
-
-- sc-cicd-dev
-- sc-cicd-uat
-- sc-cicd-prod
-- sc-cicd-dr
-- sc-cicd-tags
-
-These are not needed to prove the Chat-to-Azure-DevOps bridge with /ado-list.
+Bridgeから起動しても、PipelineのWIF認可・Agent Pool認可・Environment・承認・排他は省略されない。配布接続は`sc-cicd-sh-{infra,dev,uat,prod,dr,tags}`で、詳細は[設定](setup.md)を参照。

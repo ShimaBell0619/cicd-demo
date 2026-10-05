@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipelines/scripts"
 import artifact
 import promote
 import smoke
+import recovery
 
 
 class ArtifactTests(unittest.TestCase):
@@ -197,6 +198,59 @@ class SmokeAndTagTests(unittest.TestCase):
             for field, value in [('name', 'v1.1.1'), ('message', 'pipelineRun=41; sha256=' + 'b' * 64)]:
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'differs'):
                     promote.verify_tag_response({**correct, field: value}, self.metadata)
+
+
+class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.metadata = {"version": "1.1.1", "commitSha": "a" * 40,
+                         "buildId": "73", "sha256": "b" * 64}
+        self.current = {**self.metadata, "status": "ok", "service": "cicd-demo-nextjs",
+                        "environment": "prod", "version": "1.2.0", "buildId": "80"}
+        self.env = patch.dict(os.environ, {"RECOVERY_MODE": "rollback",
+                                          "EXPECTED_CURRENT_RUN": "80", "SYSTEM_STAGEATTEMPT": "1"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def guard(self, current=None):
+        with patch.object(recovery, "selected", return_value=self.metadata), \
+                patch.object(recovery, "read_health", return_value=current or self.current):
+            recovery.before_production("artifact", "https://prod.invalid")
+
+    def test_rollback_requires_expected_current_run(self):
+        self.guard()
+        with patch.dict(os.environ, {"EXPECTED_CURRENT_RUN": "43"}), \
+                self.assertRaisesRegex(ValueError, "Current PROD differs"):
+            self.guard()
+
+    def test_rollback_rejects_duplicate_swap_and_stage_retry(self):
+        with patch.dict(os.environ, {"EXPECTED_CURRENT_RUN": "73"}), \
+                self.assertRaisesRegex(ValueError, "already the rollback Run"):
+            self.guard({**self.current, **self.metadata})
+        with patch.dict(os.environ, {"SYSTEM_STAGEATTEMPT": "2"}), \
+                self.assertRaisesRegex(ValueError, "Do not retry"):
+            self.guard()
+
+    def test_dr_only_requires_current_artifact(self):
+        with patch.dict(os.environ, {"RECOVERY_MODE": "dr-only"}):
+            with self.assertRaisesRegex(ValueError, "not current PROD"):
+                self.guard()
+            with patch.dict(os.environ, {"EXPECTED_CURRENT_RUN": "73"}):
+                self.guard({**self.current, **self.metadata})
+
+    def test_current_run_must_be_explicit_and_numeric(self):
+        for value in ("", "0", "abc"):
+            with self.subTest(value=value), patch.dict(os.environ, {"EXPECTED_CURRENT_RUN": value}), \
+                    self.assertRaisesRegex(ValueError, "explicitly"):
+                self.guard()
+
+    def test_unreadable_prod_has_no_bootstrap_bypass(self):
+        with patch.object(recovery, "selected", return_value=self.metadata), \
+                patch.object(recovery, "read_health", side_effect=OSError("unreachable")), \
+                self.assertRaisesRegex(ValueError, "Cannot read"):
+            recovery.before_production("artifact", "https://prod.invalid")
+        with patch.dict(os.environ, {"RECOVERY_MODE": "bootstrap"}), \
+                self.assertRaisesRegex(ValueError, "Unknown recovery mode"):
+            self.guard()
 
 
 if __name__ == "__main__":

@@ -28,11 +28,11 @@ steps:
       inlineScript: |
         set -euo pipefail
         [[ "$BUILD_REASON" == Manual ]] || { echo 'Start infrastructure manually.' >&2; exit 1; }
-        az group show -n "$RESOURCE_GROUP" --query tags -o json > /tmp/poc-group-tags.json
-        python3 -c 'import json; t=json.load(open("/tmp/poc-group-tags.json")); assert t.get("workload")=="selfhosted-validation" and t.get("lifecycle")=="retained", "Wrong validation group"'
+        az group show -n "$RESOURCE_GROUP" --query tags -o json > /tmp/cicd-group-tags.json
+        python3 -c 'import json; t=json.load(open("/tmp/cicd-group-tags.json")); assert t.get("workload")=="selfhosted-validation" and t.get("lifecycle")=="retained", "Wrong validation group"'
         az bicep build --file infra/app-service.bicep --outfile /tmp/app-service.json
         args=(--resource-group "$RESOURCE_GROUP" --template-file /tmp/app-service.json
-          --parameters location="$LOCATION" namePrefix="$NAME_PREFIX" skuName=S1 lifecycle=retained expiresOn='')
+          --parameters location="$LOCATION" namePrefix="$NAME_PREFIX" skuName=S1)
         az deployment group validate "${args[@]}" --only-show-errors
         az deployment group what-if "${args[@]}" --only-show-errors
         az deployment group create "${args[@]}" --name "cicd-infra-$BUILD_BUILDID" --only-show-errors
