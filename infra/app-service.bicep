@@ -4,15 +4,9 @@ param location string
 @description('Short resource-name prefix.')
 param namePrefix string
 
-@description('Standard S1 is shared by the four apps and PROD staging for this disposable PoC.')
+@description('Standard S1 is shared by the four apps and PROD staging for the retained validation environment.')
 @allowed(['S1'])
 param skuName string = 'S1'
-
-@description('Optional Japan-local expiry date for disposable resources; empty for retained validation.')
-param expiresOn string = ''
-
-@allowed(['disposable', 'retained'])
-param lifecycle string = 'disposable'
 
 var environments = [
   'dev'
@@ -23,10 +17,11 @@ var environments = [
 
 var uniqueSuffix = uniqueString(resourceGroup().id)
 var appServicePlanName = 'asp-${namePrefix}'
-var commonTags = union({
+var commonTags = {
   purpose: 'cicd-poc'
-  lifecycle: lifecycle
-}, empty(expiresOn) ? {} : { expiresOn: expiresOn })
+  lifecycle: 'retained'
+  workload: 'selfhosted-validation'
+}
 
 var runtimeConfig = {
   linuxFxVersion: 'NODE|22-lts'

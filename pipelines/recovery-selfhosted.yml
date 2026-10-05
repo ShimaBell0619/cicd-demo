@@ -6,23 +6,19 @@ parameters:
   - name: mode
     type: string
     default: dr-only
-    values: [bootstrap, rollback, dr-only]
+    values: [rollback, dr-only]
   - name: sourcePipeline
     type: string
-    default: '14'
+    default: '17'
   - name: sourceRun
     type: string
-    default: '43'
+    default: ''
   - name: expectedCurrentRun
     type: string
-    default: '0'
+    default: ''
 variables:
-  devApp: app-cicd-sh-dev-qjykmbw33p6b4
-  uatApp: app-cicd-sh-uat-qjykmbw33p6b4
   prodApp: app-cicd-sh-prod-qjykmbw33p6b4
   drApp: app-cicd-sh-dr-qjykmbw33p6b4
-  devUrl: https://app-cicd-sh-dev-qjykmbw33p6b4.azurewebsites.net
-  uatUrl: https://app-cicd-sh-uat-qjykmbw33p6b4.azurewebsites.net
   prodUrl: https://app-cicd-sh-prod-qjykmbw33p6b4.azurewebsites.net
   drUrl: https://app-cicd-sh-dr-qjykmbw33p6b4.azurewebsites.net
   resourceGroup: rg-cicd-selfhosted-jpw
@@ -77,22 +73,7 @@ stages:
                     RECOVERY_MODE: ${{ parameters.mode }}
                     EXPECTED_CURRENT_RUN: ${{ parameters.expectedCurrentRun }}
                     SYSTEM_ACCESSTOKEN: $(System.AccessToken)
-                - ${{ if eq(parameters.mode, 'bootstrap') }}:
-                    - template: templates/deploy.yml
-                      parameters:
-                        connection: sc-cicd-sh-dev
-                        app: $(devApp)
-                        group: $(resourceGroup)
-                        url: $(devUrl)
-                        environment: dev
-                    - template: templates/deploy.yml
-                      parameters:
-                        connection: sc-cicd-sh-uat
-                        app: $(uatApp)
-                        group: $(resourceGroup)
-                        url: $(uatUrl)
-                        environment: uat
-                - ${{ if ne(parameters.mode, 'dr-only') }}:
+                - ${{ if eq(parameters.mode, 'rollback') }}:
                     - template: templates/deploy.yml
                       parameters:
                         connection: sc-cicd-sh-prod

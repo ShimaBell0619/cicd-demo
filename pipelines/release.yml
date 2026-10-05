@@ -9,13 +9,6 @@ parameters:
     displayName: First deployment only (PROD is empty and no vX.Y.Z tags exist)
     type: boolean
     default: false
-  # Dedicated validation hooks. Keep false for normal releases.
-  - name: pocHoldBeforeDR
-    type: boolean
-    default: false
-  - name: pocFailBeforeDR
-    type: boolean
-    default: false
 
 # Configure these values once. Service connection names below are literal on purpose.
 variables:
@@ -63,9 +56,6 @@ stages:
           demands:
             - Agent.OS -equals Linux
             - Agent.Name -equals vm-cicd-sh-agent
-        # Microsoft-hosted alternative for Public endpoints:
-        # pool:
-        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -101,9 +91,6 @@ stages:
           demands:
             - Agent.OS -equals Linux
             - Agent.Name -equals vm-cicd-sh-agent
-        # Microsoft-hosted alternative for Public endpoints:
-        # pool:
-        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -163,9 +150,6 @@ stages:
           demands:
             - Agent.OS -equals Linux
             - Agent.Name -equals vm-cicd-sh-agent
-        # Microsoft-hosted alternative for Public endpoints:
-        # pool:
-        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -225,34 +209,14 @@ stages:
                   env:
                     ARTIFACT_DIR: $(Pipeline.Workspace)/release
 
-      - ${{ if eq(parameters.pocHoldBeforeDR, true) }}:
-          - job: HoldBeforeDR
-            dependsOn: Production
-            pool: server
-            timeoutInMinutes: 120
-            steps:
-              - task: ManualValidation@1
-                timeoutInMinutes: 110
-                inputs:
-                  notifyUsers: $(uatApprovers)
-                  approvers: $(uatApprovers)
-                  allowApproversToApproveTheirOwnRuns: true
-                  onTimeout: reject
-                  instructions: 'Validation C02: hold PROD lock after Tag while DR is pending; record competing Release check/health, cancel competitor, then Resume.'
       - deployment: DisasterRecovery
-        ${{ if eq(parameters.pocHoldBeforeDR, true) }}:
-          dependsOn: HoldBeforeDR
-        ${{ else }}:
-          dependsOn: Production
+        dependsOn: Production
         environment: sh-dr
         pool:
           name: cicd-selfhosted-linux
           demands:
             - Agent.OS -equals Linux
             - Agent.Name -equals vm-cicd-sh-agent
-        # Microsoft-hosted alternative for Public endpoints:
-        # pool:
-        #   vmImage: ubuntu-24.04
         workspace:
           clean: all
         strategy:
@@ -273,11 +237,6 @@ stages:
                   env:
                     PROD_URL: $(prodUrl)
                     ARTIFACT_DIR: $(Pipeline.Workspace)/release
-                - ${{ if eq(parameters.pocFailBeforeDR, true) }}:
-                    - bash: |
-                        echo 'Intentional validation G01 failure before DR write; PROD and Tag remain complete.'
-                        exit 1
-                      displayName: Intentional DR-boundary failure for recovery validation
                 - template: templates/deploy.yml
                   parameters:
                     connection: sc-cicd-sh-dr
