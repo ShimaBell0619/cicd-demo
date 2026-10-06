@@ -83,11 +83,11 @@ Pipelines上のUAT受入・PRODデプロイ・Rollback承認が否決または�
 
 | ブランチ | 作成元 | 役割 |
 |---|---|---|
-| `develop` | ― | 開発変更の集約先。通常リリースの作成元。 |
 | `feature/<機能名>` | `develop` | 機能単位の開発。完了した変更をPRでdevelopへ取り込む。 |
+| `develop` | ― | 開発変更の集約先。通常リリースの作成元。 |
 | `release/vX.Y.Z` | `develop` | 通常リリースの候補とRelease実行元。 |
-| `main` | ― | UATを完了し、本番反映対象として受け入れたソースの管理。 |
 | `hotfix/vX.Y.Z` | `main` | 本番の修正候補とRelease実行元。 |
+| `main` | ― | UATを完了し、本番反映対象として受け入れたソースの管理。 |
 
 main／developにはBranch Policyを設定し、PRレビューとBuild検証を経て、Merge commitで変更を取り込む。Pipeline定義もレビュー対象とする。
 
@@ -97,43 +97,15 @@ Release Tagは`vX.Y.Z`とし、Release Run、候補Commit、Tag、デプロイ�
 
 ### 2.2 ブランチ管理図
 
-機能開発・通常リリースとHotfixを分け、Commit履歴を左から右へ示す。図中のブランチ名・版番号は命名規則の例とする。
+機能開発・通常リリースからHotfixまでの履歴を、左から右へ進む1枚の図で示す。ブランチは上からfeature、develop、release、hotfix、mainの順とし、図中のブランチ名・版番号は命名規則の例とする。
 
-**機能開発・通常リリース**
+![ブランチ管理フロー：機能開発・通常リリース・Hotfix・develop同期](images/branch-flow.png)
 
-```mermaid
-gitGraph LR:
-    commit id: "基点"
-    branch develop
-    branch "feature/function-a"
-    commit id: "機能開発"
-    checkout develop
-    merge "feature/function-a" id: "PR取り込み"
-    branch "release/v1.2.0"
-    commit id: "候補Commit R" tag: "v1.2.0"
-    checkout main
-    merge "release/v1.2.0" id: "UAT後手動Merge"
-```
+[拡大表示（SVG）](images/branch-flow.svg)
 
-通常リリース後のdevelop同期は、2.3の条件に従う。
+図中の候補 R／候補 Hは、Releaseが実際にBuildするCommitを表す。TagはPRODのSlot Swap正常終了後にReleaseが自動作成し、候補Commit SHAへ付与する。mainのMerge Commitには付与しない。
 
-**Hotfix・developへの同期**
-
-```mermaid
-gitGraph LR:
-    commit id: "稼働版"
-    branch develop
-    commit id: "開発継続"
-    checkout main
-    branch "hotfix/v1.2.1"
-    commit id: "候補Commit H" tag: "v1.2.1"
-    checkout main
-    merge "hotfix/v1.2.1" id: "UAT後手動Merge"
-    checkout develop
-    merge main id: "PROD後に同期"
-```
-
-Tagの表示位置は付与先のCommitを表す。実際のTag作成はPRODのSlot Swap正常終了後に行い、ReleaseがBuildした候補Commit SHAへ付与する。
+通常リリースの図は、release上での調整がdevelopに未反映の例とする。PROD反映後のmain → develop同期は、2.3の条件に従う。
 
 ### 2.3 developへの同期
 
