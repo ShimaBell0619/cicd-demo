@@ -210,8 +210,8 @@ flowchart TB
 | R02 | DEV配布 | 自動・Pipelines | Release Pipeline | R01のArtifactをDEVへ配布し、処理が正常終了すること。 |
 | R03 | UAT配布 | 自動・Pipelines | Release Pipeline | R02完了後、同じArtifactをUATへ配布し、処理が正常終了すること。 |
 | R04 | UAT業務確認 | 手動・UAT | 業務確認担当者 | 対象Release Runの候補について、業務上の受入可否を判断するための確認を完了すること。 |
-| R05 | UAT受入承認 | 受入承認・Pipelines | アプリ開発責任者 | R04の結果を受け入れ、対象Releaseの継続を承認すること。 |
-| R06 | mainへのPR承認・手動Merge | マージ承認・手動操作／Repos | 承認：アプリ開発責任者。Merge：人が実施。 | UAT済み候補とPRの内容・対象Release Runの対応、C01のPR Build成功を確認し、Merge commitでmainへ取り込むこと。 |
+| R05 | UAT受入承認 | 受入承認・Pipelines | アプリ開発責任者 | R04の結果から候補が業務上の受入条件を満たすことを確認し、対象Releaseの継続を承認すること。 |
+| R06 | mainへのPR承認・手動Merge | マージ承認・手動操作／Repos | 承認：アプリ開発責任者。Merge：人が実施。 | 対象release／hotfixの内容とUAT済み候補・Release Runの対応、C01のPR Build成功を確認し、Merge commitでmainへ取り込むこと。 |
 | R07 | PRODデプロイ承認 | デプロイ承認・Pipelines | 運用責任者。自己承認可。 | R05の受入とR06のMerge完了を確認し、本番への配布・切替を承認すること。 |
 | R08 | PROD staging配布 | 自動・Pipelines | Release Pipeline | UATで受け入れた同じArtifactをstagingへ配布し、処理が正常終了すること。 |
 | R09 | Slot Swap | 自動・Pipelines | Release Pipeline | R08の正常終了後、stagingとproductionをSwapし、処理が正常終了すること。 |
@@ -286,6 +286,6 @@ flowchart TB
 | 復旧可能な範囲 | 次のReleaseでstagingを上書きした場合など、直前版がSlotに残っていない場合は本方式で戻せない。 |
 | データ・設定 | 再SwapではDB・データやIaC管理の設定を過去の状態へ復旧しない。直前版と現在のデータ・設定との互換性を前提とする。 |
 | DR・Tag | PRODのみを戻し、DRの版は変更しない。Release Tagの新規作成・付け替えも行わない。 |
-| 排他 | K03の再Swapを、ReleaseのPROD・DR更新、DR Stageの再実行、別のRecoveryと同時に実行しない。 |
+| 排他 | K03の再Swapを、ReleaseのPROD・DR更新、DR Stageの再実行、別のRecoveryと同時に実行しない。承認・排他の待機後もK01の適用条件を満たすことを確認する。 |
 | 再Swap結果が不明 | 自動再実行・自動再Swapは行わず、運用担当者がAzure上の実状態を確認してから対応を判断する。 |
 | DR設計との分担 | DRへのアプリケーション配布は災害時の業務切替完了を意味しない。責任範囲外の復旧・切替は別の障害復旧・DR設計に従う。 |
