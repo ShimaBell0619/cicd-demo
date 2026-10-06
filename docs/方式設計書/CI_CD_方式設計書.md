@@ -84,6 +84,7 @@ Pipelines上のUAT受入・PRODデプロイ・Rollback承認が否決または�
 | ブランチ | 作成元 | 役割 |
 |---|---|---|
 | `develop` | ― | 開発変更の集約先。通常リリースの作成元。 |
+| `feature/<機能名>` | `develop` | 機能単位の開発。完了した変更をPRでdevelopへ取り込む。 |
 | `release/vX.Y.Z` | `develop` | 通常リリースの候補とRelease実行元。 |
 | `main` | ― | UATを完了し、本番反映対象として受け入れたソースの管理。 |
 | `hotfix/vX.Y.Z` | `main` | 本番の修正候補とRelease実行元。 |
@@ -96,39 +97,55 @@ Release Tagは`vX.Y.Z`とし、Release Run、候補Commit、Tag、デプロイ�
 
 ### 2.2 ブランチ管理図
 
-通常リリースとHotfixの候補作成、mainへの取り込み、developへの同期を示す。図中の版番号は命名規則の例とする。
+機能開発・通常リリースとHotfixを分け、Commit履歴を左から右へ示す。図中のブランチ名・版番号は命名規則の例とする。
+
+**機能開発・通常リリース**
 
 ```mermaid
-gitGraph TB:
+gitGraph LR:
     commit id: "基点"
     branch develop
-    commit id: "開発変更"
-    branch "release/v1.2.0"
-    commit id: "Build候補R" tag: "v1.2.0"
-    checkout main
-    merge "release/v1.2.0" id: "UAT後に手動Merge R"
+    branch "feature/function-a"
+    commit id: "機能開発"
     checkout develop
-    merge main id: "PROD反映後に同期 R"
+    merge "feature/function-a" id: "PR取り込み"
+    branch "release/v1.2.0"
+    commit id: "候補Commit R" tag: "v1.2.0"
+    checkout main
+    merge "release/v1.2.0" id: "UAT後手動Merge"
+```
+
+通常リリース後のdevelop同期は、2.3の条件に従う。
+
+**Hotfix・developへの同期**
+
+```mermaid
+gitGraph LR:
+    commit id: "稼働版"
+    branch develop
+    commit id: "開発継続"
     checkout main
     branch "hotfix/v1.2.1"
-    commit id: "Build候補H" tag: "v1.2.1"
+    commit id: "候補Commit H" tag: "v1.2.1"
     checkout main
-    merge "hotfix/v1.2.1" id: "UAT後に手動Merge H"
+    merge "hotfix/v1.2.1" id: "UAT後手動Merge"
     checkout develop
-    merge main id: "PROD反映後に同期 H"
+    merge main id: "PROD後に同期"
 ```
 
 Tagの表示位置は付与先のCommitを表す。実際のTag作成はPRODのSlot Swap正常終了後に行い、ReleaseがBuildした候補Commit SHAへ付与する。
 
 ### 2.3 developへの同期
 
-通常リリース・HotfixのPROD反映後、main → developのPRで、リリース時の調整や本番修正を開発側へ戻す。アプリ開発担当者またはアプリ開発責任者がPRを作成し、アプリ開発責任者の承認後、Merge commitで手動Mergeする。
+PROD反映後、リリース時の調整またはHotfix修正がdevelopに未反映の場合、main → developのPRで取り込む。通常リリースで追加修正がなく、変更が既にdevelopに含まれている場合は、同期PRを作成しない。
 
-同期PRにもC01のBuild検証を適用し、developへのMerge後はC03～C04によるBuild・DEV配布を実行する。
+アプリ開発担当者またはアプリ開発責任者がPRを作成し、アプリ開発責任者の承認後、Merge commitで手動Mergeする。同期PRにもC01のBuild検証を適用し、developへのMerge後はC03～C04によるBuild・DEV配布を実行する。
 
 ### 2.4 CI・開発変更の反映フロー
 
-develop／main向けPRではBuild検証を行う。developへのMerge後は自動で、任意ブランチからは手動実行権限を持つ利用者の起動により、Build・DEV配布を行う。mainへのMergeを契機とするDEV配布は行わない。
+feature → developのPRではC01のBuild検証後、アプリ開発責任者の承認を受け、Merge commitで手動Mergeする。developへのMerge後はC03～C04によりBuild・DEV配布を自動実行する。
+
+main向けPRおよびmain → developの同期PRもC01の対象とする。任意ブランチ（featureを含む）からは、手動実行権限を持つ利用者の起動によりBuild・DEV配布を行う。mainへのMergeを契機とするDEV配布は行わない。
 
 ```mermaid
 flowchart TB
@@ -144,7 +161,7 @@ PR検証はC01で完了し、developへのMerge後は別のCI実行でC03～C04�
 
 | No. | 処理 | 実行・承認 | 完了・移行条件 |
 |---|---|---|---|
-| C01 | PR Build | 自動 | PRの変更内容のBuild成功。 |
+| C01 | PR Build | 自動 | develop／main向けPRの変更内容のBuild成功。 |
 | C02 | developへのPR承認・手動Merge | Repos：アプリ開発責任者が承認、人が手動Merge。 | C01の成功とPRレビューを確認し、Merge commitで取り込む。 |
 | C03 | DEV配布用Build | 自動 | CI-DEVはMerge後のdevelop、CI-MANUALは指定ブランチのBuild成功。 |
 | C04 | DEV配布 | 自動 | C03の成果物をDEVへ配布し、正常終了。 |
