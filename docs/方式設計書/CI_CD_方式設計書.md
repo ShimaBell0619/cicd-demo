@@ -1,53 +1,129 @@
 # アプリケーションCI/CD方式設計書
 
-本書は、Azure DevOps Servicesを用いたアプリケーションのBuild、配布および版戻しの方式を定める。インフラ構築Pipelineは対象外とし、アプリケーションCI/CDとの責任分担のみを記載する。
+本書は、Azure DevOps Servicesを用いたアプリケーションのBuild、配布および版戻しの方式を定める。Excelでは1～4章をそれぞれ1シートとし、各フロー図と処理・承認表を同じシートに配置する。
 
-## 1. CI/CD方式概要
-
-### 1.1 適用範囲・基本方針
-
-| 項目 | 採用方式 |
+| シート | 記載内容 |
 |---|---|
-| ソースコード管理 | Azure Reposを使用する。 |
-| CI/CD | Azure PipelinesでCI／Release／Recoveryの3種類のPipelineを実行する。 |
-| 実行基盤 | BuildおよびAzureへのデプロイ・Slot操作はSelf-hosted Agentで実行する。配置と役割は6章に定める。 |
-| 成果物の配布 | Releaseで一度生成したPipeline ArtifactをDEV → UAT → PROD → DRへ順次配布する。環境ごとの再Buildは行わない。 |
-| 品質確認 | Pipelineは処理の正常終了を確認する。業務上の受入可否はUATでの手動確認と承認により判断する。 |
-| 復旧 | PRODの直前版へのRollbackを対象とする。方式と責任範囲は7章に定める。 |
+| 1. 全体構成・共通方式 | 構成要素、Pipelineとフローの一覧、実行基盤、認証、成果物・設定の管理。 |
+| 2. ソース管理・CI | ブランチ管理、PR検証、developへのMergeとDEV配布、手動DEV配布。 |
+| 3. Release | DEVからDRまでの配布、UAT受入、mainへのMerge、本番承認、途中失敗時の扱い。 |
+| 4. Recovery | PRODの直前版へのRollback、承認、適用条件および責任範囲。 |
 
-### 1.2 環境の役割
+図と表のC01／R01／K01等は、処理を対応付けるための資料内の番号とする。
 
-| 環境 | 役割 |
-|---|---|
-| DEV | 開発中の変更やリリース候補を配布し、開発担当者が確認する環境。 |
-| UAT | リリース候補の業務上の受入確認を行う環境。 |
-| PROD | 承認されたリリース版を利用者へ提供する環境。 |
-| DR | PRODへの反映後に、同じアプリケーション版を配布する災害対策環境。 |
+## 1. 全体構成・共通方式
 
-### 1.3 CI/CD全体構成図
+### 1.1 対象・全体構成
+
+Azure Reposでソースを管理し、Azure PipelinesでCI／Release／Recoveryを実行する。対象はDEV／UAT／PROD／DRのアプリケーションCI/CDとし、インフラ構築Pipelineは対象外とする。
 
 ![CI/CD全体構成図](images/cicd-overview.png)
 
-図は制御、成果物および配布先の関係を示す。矢印は論理的な処理の関係であり、詳細な通信経路を示すものではない。
+図の矢印は制御・成果物・配布順序の関係を表す。詳細な通信経路はネットワーク設計で扱う。
 
-構成図のアイコンは、Microsoft公式の[Azure Architecture Icons](https://learn.microsoft.com/azure/architecture/icons/)および[Azure DevOps製品アイコン](https://learn.microsoft.com/azure/devops/)を使用する。
+アイコンはMicrosoft公式の[Azure Architecture Icons](https://learn.microsoft.com/azure/architecture/icons/)および[Azure DevOps製品アイコン](https://learn.microsoft.com/azure/devops/)を使用する。
 
-## 2. ソースコード・ブランチ管理方式
+### 1.2 Pipeline・フロー一覧
 
-### 2.1 管理対象・ブランチの役割
+Pipelineは3種類とし、CIは起動契機に応じて3つのフローを持つ。
 
-アプリケーションのソースコード、Pipeline YAMLおよび関連スクリプトをAzure Reposで版管理する。
+| Pipeline | フロー | 起動契機・対象 | 処理の概要 | 対応する図・表 |
+|---|---|---|---|---|
+| CI | CI-PR：PR検証 | develop／main向けPRの作成・更新。 | Buildのみ。 | 2.3・C01 |
+| CI | CI-DEV：開発変更のDEV反映 | developへのMerge。 | Build → DEV配布。 | 2.3・C03～C04 |
+| CI | CI-MANUAL：手動DEV反映 | 任意ブランチから手動実行。 | Build → DEV配布。 | 2.3・C03～C04 |
+| Release | REL：通常リリース・Hotfix | release／hotfixから手動実行。 | Build・Artifact生成 → DEV → UAT → PROD → DR。 | 3.2・R01～R11 |
+| Recovery | REC：直前版Rollback | mainから手動実行。 | 対象確認・承認 → PROD Slot再Swap。 | 4.2・K01～K04 |
 
-| ブランチ | 作成元 | 用途 |
+| 環境 | 用途 |
+|---|---|
+| DEV | 開発変更・リリース候補の確認。CIとReleaseの配布先。 |
+| UAT | リリース候補の手動業務確認と受入判断。 |
+| PROD | 承認されたリリース版の業務利用。 |
+| DR | PROD反映後に同じアプリケーション版を配布する災害対策環境。 |
+
+### 1.3 Self-hosted Agent
+
+Build、AzureへのデプロイおよびSlot操作はSelf-hosted Agentで実行する。Build用とDeploy用でAgentを分離せず、東西Agentの相互代替は行わない。
+
+| 配置 | 台数・Pool | 担当処理 |
 |---|---|---|
-| `develop` | ― | 開発中の変更を集約する。通常リリースの作成元とする。 |
-| `release/vX.Y.Z` | `develop` | 通常リリースの候補を管理し、Release Pipelineの実行元とする。 |
-| `main` | ― | UATを完了し、本番反映対象として受け入れたソースを管理する。 |
-| `hotfix/vX.Y.Z` | `main` | 本番の修正候補を管理し、Release Pipelineの実行元とする。 |
+| 東日本 | VM 1台、東日本用Agent Pool。 | Build、DEV／UAT／PROD配布、PRODのSlot Swap・再Swap。 |
+| 西日本 | VM 1台、西日本用Agent Pool。 | DR配布。 |
+
+| 項目 | 方式・前提 |
+|---|---|
+| 接続 | 各AgentからPrivate Endpoint経由でアプリケーションをデプロイする。配布先とPROD stagingを含む到達性・名前解決を確保する。 |
+| その他の通信 | Azure DevOps、依存関係取得先、WIF認証先およびAzure管理APIへの必要な通信はネットワーク設計で扱う。 |
+| 管理 | Agent VMのOS、Agent、必要ツールの更新・障害復旧はCI/CD基盤管理側で一元管理する。 |
+| 停止時 | 対象Agentが利用できない間は、そのAgentの担当処理を実行できない。 |
+
+### 1.4 認証・利用権限
+
+環境ごとにService Connectionを分け、Workload Identity Federation（WIF）でAzureへ認証する。IaC用の接続とは分離し、対象環境へのデプロイ・Slot操作に必要な最小権限を付与する。
+
+| Service Connectionの対象 | 個別認可するPipeline |
+|---|---|
+| DEV | CI、Release。 |
+| UAT | Release。 |
+| PROD | Release、Recovery。 |
+| DR | Release。 |
+
+| 制御対象 | 方式 |
+|---|---|
+| 接続の利用・管理 | 全Pipelineへの一括利用許可を無効とし、必要なPipelineのみ個別認可する。接続の作成、WIF設定、権限変更はCI/CD基盤管理者に限定する。 |
+| Agent Pool・保護設定 | Poolの利用を必要なPipelineに限定する。Pool・Agent、実行権限・承認・排他設定の管理はCI/CD基盤管理者に限定する。 |
+| Tag作成権限 | Releaseが使用するBuild Service Identityに、対象Azure ReposでTagを作成するための必要な権限だけ追加する。専用IDは設けない。 |
+
+各Pipelineの実行者と、Repos／Pipelinesでの承認者は、2～4章の対象フローに記載する。
+
+### 1.5 Pipeline Artifact・環境別設定
+
+| 対象 | 管理方式 |
+|---|---|
+| 使用する成果物機能 | Azure PipelinesのPipeline Artifactを使用する。Azure Artifactsは使用しない。 |
+| 生成・配布 | Release Runで一度生成し、4環境へ同じArtifactを配布する。環境ごとの再Build・作り替えは行わない。 |
+| 追跡・保持 | 候補Commit SHA、Release版、元のRelease Run、Artifact、各環境のデプロイ記録を対応付ける。保持はAzure PipelinesのRun／Artifact保持設定に従い、独自の長期保持・世代管理ルールは設けない。 |
+| Application Settings | App Service／Functions等の設定反映主体はIaC／Bicepに一元化する。アプリケーションCI/CDから設定を書き換えず、二重管理しない。 |
+| 設定値の受け渡し | 必要に応じてAzure DevOps Variable Groupの値をIaC Pipelineへ渡す。 |
+| 秘密情報 | Azure Key Vaultで管理し、アプリケーションはApplication SettingsのKey Vault参照を使用する。 |
+
+同一Artifactを各環境で利用できるよう、環境固有値をBuild時に固定しない構成とする。
+
+### 1.6 共通の実行ルール
+
+| 項目 | 方式 |
+|---|---|
+| 自動確認の範囲 | 自動テスト、Smoke Test、HTTP疎通確認等は実施しない。Pipelineが確認する範囲はBuild・Deploy・Slot Swap等の処理の正常終了までとし、業務動作の正常を保証しない。 |
+| 確認・記録 | 対象ソース、Pipeline実行、処理結果、承認結果、配布先を追跡可能にする。業務上の受入はReleaseのUATで手動確認する。 |
+| Pipeline上の承認待機 | UAT受入・PRODデプロイ・Rollback承認が否決または期限超過となった場合、Pipelineを終了する。待機期間は詳細設計で定め、待機中はAgentを占有し続けない。 |
+| 排他制御 | 同じ対象を複数の実行が同時に更新しないよう制御する。Agentの空き待ちだけに依存せず、保護する区間を各フローで定める。 |
+| 基盤の前提 | Azureリソース、Slot、接続経路等は別途構築済みであることを前提とする。 |
+
+## 2. ソース管理・CI
+
+### 2.1 ブランチ管理
+
+アプリケーションのソースコード、Pipeline YAMLおよび関連スクリプトをAzure Reposで管理する。
+
+| ブランチ | 作成元 | 役割 |
+|---|---|---|
+| `develop` | ― | 開発変更の集約先。通常リリースの作成元。 |
+| `release/vX.Y.Z` | `develop` | 通常リリースの候補とRelease実行元。 |
+| `main` | ― | UATを完了し、本番反映対象として受け入れたソースの管理。 |
+| `hotfix/vX.Y.Z` | `main` | 本番の修正候補とRelease実行元。 |
+
+| 管理項目 | 方式 |
+|---|---|
+| ブランチ保護 | main／developにBranch Policyを設定し、PRレビューとBuild検証を経て変更を取り込む。Pipeline定義もレビュー対象とする。 |
+| Merge方式 | PRはMerge commitで取り込む。 |
+| main向けPRテンプレート | UAT完了、対象Release Run、Merge commitの使用、Merge後のPROD承認等を確認するチェックリストを用意する。具体的な項目は詳細設計で定める。 |
+| Release Tag | 命名は`vX.Y.Z`とする。付与対象・作成時点はReleaseのR10に定め、既存Tagは付け替えない。 |
+| 稼働版の特定 | Release Run、候補Commit、Tagおよびデプロイ記録の対応から特定する。mainの最新Commitだけで稼働版を判断しない。 |
 
 ### 2.2 ブランチ管理図
 
-図の版番号は命名規則を示す例であり、通常リリースと、その後のHotfixを表す。
+版番号は命名規則を示す例とする。通常リリースとHotfixの候補作成元、およびUAT完了後のmainへのMergeを示す。
 
 ```mermaid
 gitGraph TB:
@@ -57,247 +133,159 @@ gitGraph TB:
     branch "release/v1.2.0"
     commit id: "Build候補R" tag: "v1.2.0"
     checkout main
-    merge "release/v1.2.0" id: "UAT完了後に手動Merge R"
+    merge "release/v1.2.0" id: "UAT後に手動Merge R"
     branch "hotfix/v1.2.1"
     commit id: "Build候補H" tag: "v1.2.1"
     checkout main
-    merge "hotfix/v1.2.1" id: "UAT完了後に手動Merge H"
+    merge "hotfix/v1.2.1" id: "UAT後に手動Merge H"
 ```
 
-Tagの表示位置は付与先のCommitを示し、Tagを作成する時刻を示すものではない。実際にはmainへのMergeとPROD承認を経て、PRODのSlot Swapが正常終了した後にRelease PipelineがTagを自動作成する。
+図のTag位置は付与先を表し、作成時刻を表すものではない。TagはPRODのSlot Swap正常終了後に、ReleaseがBuildした候補Commitへ自動付与し、mainのMerge Commitには付与しない。
 
-### 2.3 変更・リリース版の管理
+### 2.3 CI・開発変更の反映フロー
 
-| 項目 | 管理方式 |
+| 項目 | 実行条件 |
 |---|---|
-| ブランチ保護 | `main`／`develop`にBranch Policyを設定し、PRレビューとBuild検証を経て変更を取り込む。 |
-| PRのMerge方式 | Merge commitを使用する。 |
-| mainへの反映 | UAT完了後、`release/vX.Y.Z`または`hotfix/vX.Y.Z`からmainへのPRを人が手動でMergeする。 |
-| PRテンプレート | main向けPRには、UAT完了、対象Release Run、Merge commitの使用、Merge後のPROD承認等を確認するチェックリストを用意する。具体的な項目は詳細設計で定める。 |
-| 候補の整合 | mainへ取り込む内容とUAT済み候補の整合をPRで確認する。候補Commitを変更した場合は、新しいRelease RunでBuildと受入確認をやり直す。 |
-| Release Tag | `vX.Y.Z`とし、Release Pipelineが実際にBuildした候補Commit SHAへ付与する。mainのMerge Commitには付与しない。既存Tagは付け替えない。 |
-| 稼働版の特定 | Release Run、候補Commit、Tagおよびデプロイ記録の対応から特定する。mainの最新Commitだけで稼働版を判断しない。 |
-| 未完了Release中のHotfix | 既存Releaseを中止し、mainを起点にHotfixを作成する。新しい候補として通常のRelease経路を通し、UAT受入をやり直す。 |
-
-## 3. パイプライン構成
-
-3種類のPipelineの役割と起動対象を以下に定める。処理内容は4章、環境間の移行条件は5章、実行権限は6章に定める。
-
-| Pipeline | 役割 | 起動契機・対象 | 主な出力 |
-|---|---|---|---|
-| CI | 変更のBuild検証と、開発用のDEV配布。 | develop／main向けPRの作成・更新時に自動起動する。developへのMerge後にも自動起動する。任意ブランチから手動実行できる。 | Build結果、対象実行のDEVデプロイ結果。 |
-| Release | リリース用成果物の生成と、4環境への順次配布。通常リリースとHotfixで共用する。 | `release/vX.Y.Z`／`hotfix/vX.Y.Z`から手動実行する。 | Pipeline Artifact、リリース・承認・デプロイ記録、Release Tag。 |
-| Recovery | PRODの直前版へのRollback。 | `main`から手動実行する。 | PROD Slotの再Swap結果、承認・復旧記録。 |
-
-CIのBuild成果物をリリース用成果物として昇格させず、Releaseが配布用のPipeline Artifactを生成する。
-
-## 4. パイプライン処理方式
-
-### 4.1 CIの処理
-
-| 起動条件 | 処理 |
-|---|---|
-| develop／main向けPRの作成・更新 | PRの変更内容をBuildする。DEVへのデプロイは行わない。 |
-| developへのMerge後 | Merge後のソースをBuildし、DEVへ自動デプロイする。 |
-| 任意ブランチからの手動実行 | 指定ブランチのソースをBuildし、DEVへデプロイする。 |
-| mainへのMerge後 | Mergeを契機とするDEVデプロイは行わない。本番反映は実行中のReleaseで継続する。 |
-
-### 4.2 共通処理・Release・Recoveryの処理
-
-| 処理 | 対象Pipeline | 処理内容 |
-|---|---|---|
-| ソース・定義の取得 | CI／Release／Recovery | 実行対象のソースまたはPipeline定義を取得する。ReleaseではBuild対象の候補Commitを特定する。 |
-| Build | CI／Release | 必要な依存関係を取得してBuildする。Releaseでは候補Commitから一度だけBuildする。 |
-| Pipeline Artifactの生成・登録 | Release | Build成果物を配布可能な単位にまとめ、当該Release Runに登録する。 |
-| デプロイ | CI／Release | CIは4.1の条件に従ってDEVへ配布する。Releaseは同一Artifactを各環境へ配布する。 |
-| 本番切替 | Release | PROD stagingへデプロイし、その処理の正常終了後にproductionとのSlot Swapを実行する。 |
-| Tag作成 | Release | PROD Slot Swapの正常終了後、Buildした候補CommitへRelease Tagを自動付与する。 |
-| 版戻し | Recovery | BuildおよびArtifactの配布を行わず、PROD Slotを再Swapする。適用条件は7章に定める。 |
-| 結果の記録 | CI／Release／Recovery | 対象ソース、実行結果、承認結果およびデプロイ先を記録する。ReleaseではArtifactとの対応も記録する。 |
-
-異常終了した処理から後続へは進めず、対応は7章に従う。自動テスト、Smoke Test、HTTP疎通確認等の自動稼働確認は実施せず、Pipelineによる確認はBuild・Deploy・Slot Swap等の処理の正常終了までとする。
-
-### 4.3 Pipeline Artifactの管理
-
-| 項目 | 管理方式 |
-|---|---|
-| 使用機能 | Azure PipelinesのPipeline Artifactを使用する。Azure Artifactsは使用しない。 |
-| 生成・配布単位 | 1つのRelease Runで一度生成し、DEV／UAT／PROD／DRで同じArtifactを使用する。 |
-| 環境差分 | 環境別の再BuildやArtifactの作り替えは行わない。環境固有の値は4.4の設定で扱う。 |
-| 追跡 | 候補Commit SHA、Release版、元のRelease Run、Pipeline Artifactおよび各環境のデプロイ記録を対応付ける。 |
-| 保持 | Azure PipelinesのRun／Artifact保持設定に従う。本方式固有の長期保持・世代管理ルールは設けない。 |
-| 復旧との関係 | Recoveryでは過去のArtifactを使用しない。 |
-
-### 4.4 環境別設定・秘密情報
-
-Application SettingsはIaC／Bicepを唯一の設定反映主体とし、アプリケーションCI/CD Pipelineからは書き換えない。
-
-| 対象 | 管理・反映方式 |
-|---|---|
-| Application Settings | Azure App Service／Functions等の環境別設定をIaC／Bicepで反映する。同じ設定をCI/CDからも更新する二重管理は行わない。 |
-| 設定値の受け渡し | 必要に応じ、Azure DevOps Variable Groupの値をIaC Pipelineへ渡す。IaC Pipeline自体の方式は本書の対象外とする。 |
-| 秘密情報 | Azure Key Vaultで管理する。アプリケーションからはApplication SettingsのKey Vault参照を使用する。 |
-| PRODのSlot設定 | production／stagingは原則同じApplication Settingsを使用する。Slotごとに固定する必要がある設定のみDeployment slot settingとする。 |
-
-## 5. リリース・デプロイ方式
-
-### 5.1 リリースフロー
-
-UAT受入後に人がmainへPRをMergeし、その後にPRODデプロイ承認を行う。PROD反映後のTag作成とDRへの配布まで正常終了した時点で、リリース全体を完了とする。
+| CI-PR | develop／main向けPRの作成・更新時に自動起動する。 |
+| CI-DEV | developへのMerge後に自動起動する。 |
+| CI-MANUAL | 手動実行権限を持つ利用者が、任意ブランチを指定して起動する。 |
+| mainへのMerge | Mergeを契機とするDEVデプロイは行わない。 |
 
 ```mermaid
 flowchart TB
-    B["Release開始・Build 1回・Artifact生成"] --> D["DEVへ配布"]
-    D --> U["UATへ配布・手動業務確認"]
-    U --> UA{"UAT受入承認"}
-    UA -->|承認| M["mainへのPRを手動Merge"]
-    UA -->|否決・期限超過| E["Pipeline終了"]
-    M --> PA{"PRODデプロイ承認"}
-    PA -->|承認| ST["PROD stagingへ配布"]
-    PA -->|否決・期限超過| E
-    ST -->|デプロイ処理正常終了| SW["Slot Swap"]
-    SW -->|正常終了| T["候補CommitへTag自動付与"]
-    T --> R["DRへ同一Artifactを配布"]
-    R -->|デプロイ処理正常終了| F["リリース完了"]
+    PR["CI-PR：PR作成・更新"] --> C01["C01 PR Build"]
+    C01 -->|develop向け：Build成功後| C02["C02 developへのPR承認・手動Merge"]
+    C01 -.->|main向け：結果を参照| REF["ReleaseのR06で確認"]
+    C02 -->|CI-DEV：別のCI実行を自動起動| C03["C03 DEV配布用Build"]
+    MAN["CI-MANUAL：任意ブランチから手動起動"] --> C03
+    C03 -->|Build成功| C04["C04 DEV配布"]
 ```
 
-自動処理の失敗時は後続を停止する。図の「正常終了」は処理の完了を指し、アプリケーションの業務動作確認を意味しない。
+C01でPR検証のCI実行は終了する。C02はRepos上の人による操作であり、そのMergeを契機に別のCI実行でC03～C04を行う。
 
-### 5.2 環境別の反映方式・移行条件
+| No. | 処理 | 区分・操作場所 | 実行主体／承認者 | 完了条件・次へ進む条件 |
+|---|---|---|---|---|
+| C01 | PR Build | 自動・Pipelines | CI Pipeline | PRの変更内容のBuildが正常終了すること。配布は行わない。 |
+| C02 | developへのPR承認・手動Merge | マージ承認・手動操作／Repos | 承認：アプリ開発責任者。Merge：人が実施。 | C01の成功とPRレビューを確認して承認し、Merge commitで取り込むこと。 |
+| C03 | DEV配布用Build | 自動・Pipelines | CI Pipeline | CI-DEVはMerge後のdevelop、CI-MANUALは指定ブランチをBuildし、正常終了すること。 |
+| C04 | DEV配布 | 自動・Pipelines | CI Pipeline | C03の成果物をDEVへ配布し、デプロイ処理が正常終了すること。 |
 
-| 環境 | 反映方式 | 開始条件 | 次の処理へ進む条件 |
-|---|---|---|---|
-| DEV | Slotを使用せず対象アプリケーションへ配布する。 | ReleaseのBuildとPipeline Artifactの生成が正常終了していること。 | DEVデプロイ処理が正常終了していること。 |
-| UAT | Slotを使用せず対象アプリケーションへ配布する。 | DEVデプロイ処理が正常終了していること。 | UATデプロイ処理と手動業務確認が完了し、UAT受入承認を得ていること。 |
-| PROD | stagingへ配布し、デプロイ処理の正常終了後にSlot Swapする。 | UAT受入承認、release／hotfixからmainへの手動PR Merge、PRODデプロイ承認が順に完了していること。 | Slot Swapが正常終了し、候補CommitへのTag付与が完了していること。 |
-| DR | Slotを使用せず、PRODと同一Artifactを配布する。 | PRODへの反映とTag付与が完了していること。 | DRデプロイ処理が正常終了していること。 |
+Build失敗時は配布へ進めず、PRが承認されない場合はMergeしない。CIとReleaseのDEV配布を競合させず、C04の実行中は同じ配布先への後続デプロイを待機させる。
 
-本表はReleaseの移行条件を示す。CIによるDEV配布は4.1に従う。
+## 3. Release
 
-### 5.3 UAT受入・本番移行の判断
-
-| 判断点 | 判断内容 |
-|---|---|
-| UAT受入 | 担当者によるUATでの手動業務確認を完了し、対象Release Runの候補を受け入れてPipelineを継続する。 |
-| mainへのPR Merge | Repos上で候補の取り込みを判断する。PRのマージ承認は、Pipeline上のUAT受入承認やPRODデプロイ承認を代替しない。 |
-| PRODデプロイ | UAT受入と対象候補のmainへのMerge完了を確認し、本番への配布・切替を許可する。 |
-
-Pipeline上の承認が否決された場合、または所定期間内に行われない場合はPipelineを終了する。承認の具体的な待機期間は詳細設計で定め、承認者と自己承認の扱いは6章に定める。
-
-### 5.4 PROD Deployment Slotの利用方針
-
-Slotの主目的は本番切替と直前版へのRollbackを容易にすることとする。stagingでは業務接続確認やSmoke Testを行わず、デプロイ処理の正常終了を条件にSlot Swapへ進む。
-
-Slot Swap後のstagingには直前のproductionの版が残る。Rollbackでの利用条件は7章に定める。
-
-## 6. 実行・アクセス制御方式
-
-### 6.1 Self-hosted Agentの配置・管理
-
-| 配置 | 台数・Pool | 担当処理 |
-|---|---|---|
-| 東日本 | Self-hosted Agent VM 1台、東日本用Agent Pool。 | Build、DEV／UAT／PRODへのデプロイ、PRODのSlot SwapおよびRecoveryの再Swap。 |
-| 西日本 | Self-hosted Agent VM 1台、西日本用Agent Pool。 | DRへのデプロイ。 |
-
-| 項目 | 利用・管理方式 |
-|---|---|
-| 用途分離 | Build用とDeploy用でAgentを分離しない。 |
-| 相互代替 | 東西Agentの相互代替は行わない。 |
-| デプロイ接続 | 各Agentから配布先のPrivate Endpoint経由でアプリケーションをデプロイする。認証・Azure管理操作等の通信要件は8章に定める。 |
-| 基盤管理 | Agent VMのOS、Agent、必要ツールの更新および障害復旧はCI/CD基盤管理側で一元管理する。 |
-| 利用制御 | Agent Poolを利用できるPipelineと、Pool・Agentを管理できる担当を限定する。 |
-
-### 6.2 Service Connection・Azure認証
-
-環境ごとにService Connectionを分け、Workload Identity Federation（WIF）でAzureへ認証する。各接続は対象環境のデプロイ・Slot操作に必要な最小権限に限定し、IaC用Service Connectionとは分離する。
-
-| Service Connectionの対象 | 個別認可するPipeline |
-|---|---|
-| DEV | CI、Release。 |
-| UAT | Release。 |
-| PROD | Release、Recovery。 |
-| DR | Release。 |
-
-| 制御対象 | 制御方式 |
-|---|---|
-| Pipelineへの認可 | 全Pipelineへの一括利用許可を無効とし、上表の必要なPipelineのみ個別認可する。 |
-| 接続管理 | Service Connectionの作成、WIF設定および権限変更はCI/CD基盤管理者に限定する。 |
-| Tag作成権限 | Release Pipelineが使用するBuild Service Identityに、対象Azure ReposでTagを作成するために必要な権限だけ追加する。Tag作成専用IDは設けない。 |
-| 定義・保護設定 | Pipeline定義はPRレビュー対象とし、実行権限・承認・排他設定の変更権限をCI/CD基盤管理者に限定する。 |
-
-### 6.3 実行・承認の役割
-
-| 操作 | 実行者 |
-|---|---|
-| Release Pipelineの手動実行 | アプリ開発担当者、アプリ開発責任者。 |
-| Recovery Pipelineの手動実行 | 運用担当者、運用責任者。 |
-
-Repos上のマージ承認とPipeline上の承認は、それぞれ独立した判断として管理する。
-
-| 判断対象 | 承認を行う場所 | 承認者 | 承認の役割 |
-|---|---|---|---|
-| developへのPRマージ承認 | Azure Repos | アプリ開発責任者 | 開発変更の取り込みを許可する。 |
-| UAT受入承認 | Azure Pipelines | アプリ開発責任者 | 手動業務確認の結果を受け入れ、Releaseの継続を許可する。 |
-| release／hotfix → mainのPRマージ承認 | Azure Repos | アプリ開発責任者 | UAT済み候補のmainへの取り込みを許可する。 |
-| PRODデプロイ承認 | Azure Pipelines | 運用責任者 | mainへのMerge後、本番への配布・切替を許可する。 |
-| Recovery／Rollback承認 | Azure Pipelines | 運用責任者 | PRODの直前版への版戻しを許可する。 |
-
-PRODデプロイ承認およびRollback承認では自己承認を許容する。承認待機はAzure DevOps側で管理し、待機中はAgentを占有し続けない。
-
-### 6.4 排他制御
-
-同じ配布先を複数の実行が同時に更新しないよう制御する。Agentの実行待ちだけに依存せず、CI／Release／Recovery間で競合する更新とUAT確認中の候補を保護する。
-
-| 保護対象 | 保護する範囲 | 競合時の扱い |
-|---|---|---|
-| DEV | CIまたはReleaseのデプロイ処理。 | 同じ配布先への後続デプロイを待機させる。 |
-| UAT | Releaseの配布開始からUAT受入判断の終了まで。 | 受入確認中の候補を別のReleaseで上書きしない。 |
-| PROD・DRへのリリース | PROD stagingへの配布開始からSlot Swap、Tag作成、DR配布の終了まで。 | 別のReleaseやRecoveryによる更新を同時に実行しない。 |
-| PRODのRollback | RecoveryのSlot再Swap処理。 | ReleaseのPROD・DR更新および別のRecoveryと同時に実行しない。 |
-| DR配布の再実行 | 同じRelease RunのDR Stage。 | 他のRelease・Recoveryと競合させず、対象版と現在のPROD適用版の対応を確認して実施する。 |
-
-## 7. 復旧方式
-
-### 7.1 PROD直前版へのRollback
-
-Recoveryは、PRODのproduction／staging Slotの再Swapによるアプリケーションの版戻しだけを行う。
+### 3.1 実行条件
 
 | 項目 | 方式 |
 |---|---|
-| 対象版 | 直前のSlot Swapでstagingへ移った、productionの直前1世代。 |
-| 適用条件 | stagingにRollback対象の直前版が残っており、対象とSlotの実状態を確認できること。 |
-| 実行 | mainから手動実行し、運用責任者のRollback承認後に再Swapする。 |
-| 処理範囲 | Build、過去Artifactの取得・再配布およびDRへの配布は行わない。 |
-| 完了判定・記録 | 再Swap処理の正常終了を確認し、対象版、承認および実行結果を記録する。Release Tagの新規作成・付け替えは行わない。 |
-| 責任範囲 | アプリケーションの版戻しまでとする。DB／データ、Azureリソース、外部システムの復旧、DR切替、DNS／Front Door切替は別の障害復旧・DR設計で扱う。 |
+| フロー | REL：通常リリース・Hotfixで共用する。 |
+| 起動対象 | `release/vX.Y.Z`／`hotfix/vX.Y.Z`から手動実行する。 |
+| 実行者 | アプリ開発担当者、アプリ開発責任者。 |
+| 配布対象 | Releaseで生成した同一Pipeline ArtifactをDEV → UAT → PROD → DRへ配布する。CIの成果物は昇格させない。 |
+| 完了 | PRODの切替、Tag付与、DR配布まで正常終了した時点で、リリース全体を完了とする。 |
 
-次のReleaseでstagingを上書きした場合など、直前版がSlotに残っていない場合は本方式で戻せない。RollbackはPRODのみを対象とし、DRの版は自動的には変更しない。
+### 3.2 フロー図・処理／承認表
 
-### 7.2 処理失敗時の扱い
+```mermaid
+flowchart TB
+    S["release／hotfixから手動起動"] --> R01["R01 Build・Artifact生成"]
+    R01 --> R02["R02 DEV配布"]
+    R02 --> R03["R03 UAT配布"]
+    R03 --> R04["R04 UAT業務確認"]
+    R04 --> R05{"R05 UAT受入承認"}
+    R05 -->|承認| R06["R06 mainへのPR承認・手動Merge"]
+    R05 -->|否決・期限超過| E["Pipeline終了"]
+    R06 --> R07{"R07 PRODデプロイ承認"}
+    R07 -->|承認| R08["R08 PROD staging配布"]
+    R07 -->|否決・期限超過| E
+    R08 -->|デプロイ処理正常終了| R09["R09 Slot Swap"]
+    R09 -->|正常終了| R10["R10 Release Tag作成"]
+    R10 --> R11["R11 DR配布"]
+    R11 --> F["リリース完了"]
+```
 
-Pipeline全体の成否だけでなく、実際にどこまで反映されたかに基づいて対応を判断する。
+| No. | 処理 | 区分・操作場所 | 実行主体／承認者 | 完了条件・次へ進む条件 |
+|---|---|---|---|---|
+| R01 | Build・Artifact生成 | 自動・Pipelines | Release Pipeline | 候補Commit SHAを特定して一度だけBuildし、当該RunのPipeline Artifactを生成・登録すること。 |
+| R02 | DEV配布 | 自動・Pipelines | Release Pipeline | R01のArtifactをDEVへ配布し、処理が正常終了すること。 |
+| R03 | UAT配布 | 自動・Pipelines | Release Pipeline | R02完了後、同じArtifactをUATへ配布し、処理が正常終了すること。 |
+| R04 | UAT業務確認 | 手動・UAT | 業務確認担当者 | 対象Release Runの候補について、業務上の受入可否を判断するための確認を完了すること。 |
+| R05 | UAT受入承認 | 受入承認・Pipelines | アプリ開発責任者 | R04の結果から候補が業務上の受入条件を満たすことを確認し、対象Releaseの継続を承認すること。 |
+| R06 | mainへのPR承認・手動Merge | マージ承認・手動操作／Repos | 承認：アプリ開発責任者。Merge：人が実施。 | 対象release／hotfixの内容とUAT済み候補・Release Runの対応、C01のPR Build成功を確認し、Merge commitでmainへ取り込むこと。 |
+| R07 | PRODデプロイ承認 | デプロイ承認・Pipelines | 運用責任者。自己承認可。 | R05の受入とR06のMerge完了を確認し、本番への配布・切替を承認すること。 |
+| R08 | PROD staging配布 | 自動・Pipelines | Release Pipeline | UATで受け入れた同じArtifactをstagingへ配布し、処理が正常終了すること。 |
+| R09 | Slot Swap | 自動・Pipelines | Release Pipeline | R08の正常終了後、stagingとproductionをSwapし、処理が正常終了すること。 |
+| R10 | Release Tag作成 | 自動・Pipelines | Release Pipeline | R09完了後、R01でBuildした候補Commit SHAへ`vX.Y.Z`を付与すること。mainのMerge Commitには付与しない。 |
+| R11 | DR配布 | 自動・Pipelines | Release Pipeline | PROD反映・Tag付与後、同じArtifactをDRへ配布し、処理が正常終了すること。 |
+
+R06のPRではCIのC01によるBuild検証を行うが、ReleaseのArtifactは再生成・差し替えしない。Reposのマージ承認とPipelinesのUAT受入・PRODデプロイ承認は独立した判断とし、相互に代替しない。
+
+自動処理の失敗時は後続を停止する。表の正常終了は処理の完了を指し、アプリケーションの業務動作確認を意味しない。
+
+### 3.3 配布方式・排他制御
+
+| 対象 | 方式・制約 |
+|---|---|
+| DEV／UAT／DR | Slotを使用せず、対象アプリケーションへ配布する。 |
+| PROD | Slot対応のサービス・プランを使用する。Slotの主目的は本番切替と直前版へのRollbackを容易にすることとし、stagingでの業務接続確認・Smoke Testは行わない。 |
+| PRODの設定 | production／stagingは原則同じApplication Settingsを使用し、固定が必要な設定のみDeployment slot settingとする。設定の反映は1.5のIaC／Bicepで行う。 |
+| Slot上のアプリケーション | stagingも稼働するため、ジョブ・外部連携の重複実行への対応、およびSwapに伴う実行中処理の継続性はアプリケーション設計で扱う。 |
+| DEVの排他 | R02の配布中は、CIを含め同じ配布先を更新する後続処理を待機させる。 |
+| UATの排他 | R03の配布開始からR05の受入判断終了まで、別のReleaseによる候補の上書きを防ぐ。 |
+| PROD・DRの排他 | R08の開始からR11の終了まで、別のReleaseおよびRecoveryと更新を競合させない。 |
+
+### 3.4 候補変更・途中失敗時の扱い
 
 | 状況 | 対応方針 |
 |---|---|
-| PROD切替前に処理が失敗 | 後続処理を停止し、失敗原因と候補を確認する。候補を変更する場合は新しいRelease Runで受入をやり直す。 |
-| Slot Swapの成功／失敗を判定できない | 自動再実行・自動再Swapを行わない。運用担当者がAzure上の実状態を確認してから対応を判断する。 |
-| PROD更新後にアプリケーションの問題が判明 | Slotの状態と直前版への復帰可否を確認し、承認を得て7.1のRollbackを行う。 |
-| PRODは正常に更新済みで、Tag付与等の後続処理が失敗 | 正常なPRODはRollbackしない。未完了の処理だけを補完する。 |
-| DRデプロイのみ失敗 | 同じRelease Runの同じPipeline Artifactを使用し、DR Stageだけを再実行する。PRODのデプロイ・Swapは再実行しない。 |
+| 候補Commitの変更 | 新しいRelease RunでR01から実行する。変更前の確認・承認を流用せず、UAT受入をやり直す。 |
+| 未完了Release中のHotfix | 既存Releaseを中止し、mainからHotfixを作成する。新しい候補としてRELを実行し、UAT受入をやり直す。 |
+| PROD切替前の失敗 | 後続を停止し、失敗原因と候補を確認する。 |
+| Slot Swapの成功／失敗が不明 | 自動再実行・自動再Swapを行わない。運用担当者がAzure上の実状態を確認してから対応を判断する。 |
+| PROD更新後に業務上の問題が判明 | 4章の適用条件を確認し、承認を得てRecoveryによるRollbackを行う。 |
+| PRODは正常に更新済みで、Tag付与等の後続処理が失敗 | 正常なPRODはRollbackせず、未完了の処理だけを補完する。 |
+| DRデプロイのみ失敗 | 同じRelease Runの同じPipeline ArtifactでDR Stage（R11）だけを再実行する。PRODのデプロイ・Swapは再実行しない。 |
 
-DR Stageの再実行は当該RunとArtifactが利用でき、現在のPRODと同じ版を配布する場合に行う。Recovery Pipelineは後続処理の補完には使用しない。
+DR Stageの再実行は、当該Run・Artifactが利用でき、現在のPRODと同じ版を配布する場合に行う。他のRelease・Recoveryと更新を競合させず、Recovery Pipelineは後続処理の補完に使用しない。
 
-## 8. 制約・前提事項
+## 4. Recovery
 
-| 項目 | 前提・制約 |
+### 4.1 実行条件・責任範囲
+
+| 項目 | 方式 |
 |---|---|
-| 利用基盤 | Azure DevOps Servicesを利用する。Azureリソース、Slot、接続経路等は別途構築済みであることを前提とする。 |
-| アプリケーション構成 | 環境固有値をBuild時に固定せず、同一Artifactを4環境で使用できることを前提とする。 |
-| Slotの適用 | PRODの対象サービス・プランが必要なSlot操作に対応することを前提とする。DEV／UAT／DRではSlotを使用しない。 |
-| ネットワーク | 配布先とPROD stagingを含むPrivate Endpointへの到達性・名前解決を確保する。Azure DevOps、依存関係取得先、WIF認証先およびAzure管理APIへの必要な通信はネットワーク設計で扱う。 |
-| Agentの停止 | 東日本Agent停止中はBuild・DEV／UAT／PROD配布・Rollbackを、西日本Agent停止中はDR配布を実行できない。相互代替による継続は行わない。 |
-| 確認範囲 | Pipeline成功はアプリケーションの業務動作正常を保証しない。UATで担当者が手動業務確認を行う。 |
-| Slot上のアプリケーション | stagingも稼働するため、ジョブや外部連携の重複実行等への対応はアプリケーション設計で扱う。 |
-| データ・設定との互換性 | Slot再SwapではDB・データやIaC管理の設定を過去の状態へ復旧しない。直前版が現在のデータ・設定と互換性を持つことをRollbackの前提とする。 |
-| 切替時の処理 | Slot Swapに伴う実行中処理の継続性はアプリケーション側で扱う。 |
-| 障害復旧・DRとの分担 | DRへのアプリケーション配布は災害時の業務切替完了を意味しない。7章の責任範囲外の復旧・切替は別の障害復旧・DR設計に従う。 |
+| フロー | REC：PRODの直前版へのRollbackのみを対象とする。 |
+| 起動対象・実行者 | 運用担当者または運用責任者が、mainから手動実行する。 |
+| 対象版 | 直前のSlot Swapでstagingへ移った、productionの直前1世代。 |
+| 復旧方式 | production／stagingを再Swapする。Buildおよび過去Artifactの取得・再配布は行わない。 |
+| 責任範囲 | アプリケーションの版戻しまでとする。DB／データ・Azureリソース・外部システムの復旧、DR切替、DNS／Front Door切替は別の障害復旧・DR設計で扱う。 |
+
+### 4.2 フロー図・処理／承認表
+
+```mermaid
+flowchart TB
+    K01["K01 対象版・Slot状態確認"] -->|適用可能| S["mainから手動起動"]
+    K01 -->|適用不可・状態不明| X["実行せず対応を判断"]
+    S --> K02{"K02 Rollback承認"}
+    K02 -->|承認| K03["K03 PROD Slot再Swap"]
+    K02 -->|否決・期限超過| E["Pipeline終了"]
+    K03 -->|処理正常終了| K04["K04 結果記録"]
+```
+
+| No. | 処理 | 区分・操作場所 | 実行主体／承認者 | 完了条件・次へ進む条件 |
+|---|---|---|---|---|
+| K01 | 対象版・Slot状態確認 | 手動・Azure実状態／実行記録 | 運用担当者・運用責任者 | stagingに直前版が残り、対象版とSlotの状態、現在のデータ・設定との互換性を確認できること。 |
+| K02 | Rollback承認 | 復旧承認・Pipelines | 運用責任者。自己承認可。 | K01の確認結果を踏まえ、PRODを直前版へ戻すことを承認すること。 |
+| K03 | PROD Slot再Swap | 自動・Pipelines | Recovery Pipeline | production／stagingの再Swap処理が正常終了すること。 |
+| K04 | 結果記録 | 自動・Pipelines | Recovery Pipeline | 対象版、承認、再Swapの実行結果を記録すること。 |
+
+### 4.3 制約・失敗時の扱い
+
+| 項目 | 制約・対応方針 |
+|---|---|
+| 復旧可能な範囲 | 次のReleaseでstagingを上書きした場合など、直前版がSlotに残っていない場合は本方式で戻せない。 |
+| データ・設定 | 再SwapではDB・データやIaC管理の設定を過去の状態へ復旧しない。直前版と現在のデータ・設定との互換性を前提とする。 |
+| DR・Tag | PRODのみを戻し、DRの版は変更しない。Release Tagの新規作成・付け替えも行わない。 |
+| 排他 | K03の再Swapを、ReleaseのPROD・DR更新、DR Stageの再実行、別のRecoveryと同時に実行しない。承認・排他の待機後もK01の適用条件を満たすことを確認する。 |
+| 再Swap結果が不明 | 自動再実行・自動再Swapは行わず、運用担当者がAzure上の実状態を確認してから対応を判断する。 |
+| DR設計との分担 | DRへのアプリケーション配布は災害時の業務切替完了を意味しない。責任範囲外の復旧・切替は別の障害復旧・DR設計に従う。 |
