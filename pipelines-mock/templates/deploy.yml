@@ -1,0 +1,24 @@
+# Copied from pipelines/templates/deploy.yml; Azure deployment and smoke are disabled.
+parameters:
+  - name: environment
+    type: string
+steps:
+  - bash: |
+      set -euo pipefail
+      python3 pipelines-mock/scripts/artifact.py verify "$ARTIFACT_DIR"
+      echo "MOCK $TARGET_ENV: current Run Artifact received; no Azure deployment"
+    displayName: Mock ${{ parameters.environment }} deployment
+    env:
+      ARTIFACT_DIR: $(Pipeline.Workspace)/release
+      TARGET_ENV: ${{ parameters.environment }}
+# - task: AzureWebApp@1
+#   inputs:
+#     azureSubscription: <disabled>
+#     appType: webAppLinux
+#     appName: <disabled>
+#     resourceGroupName: <disabled>
+#     package: $(Pipeline.Workspace)/release/webapp.zip
+#     deploymentMethod: zipDeploy
+#     deployToSlotOrASE: true
+#     slotName: staging
+# Smoke / HTTP application checks are intentionally disabled.

@@ -1,0 +1,53 @@
+# Copy adapted to current design: PROD previous-slot Rollback only (simulated).
+name: mock-recovery-$(Date:yyyyMMdd).$(Rev:r)
+trigger: none
+pr: none
+parameters:
+  - name: rollbackApprovers
+    type: string
+    default: shimaoka0619@gmail.com
+# Self-hosted pool and Azure Slot operations are intentionally disabled.
+pool:
+  vmImage: ubuntu-24.04
+stages:
+  - stage: Confirm
+    jobs:
+      - job: CheckTarget
+        steps:
+          - checkout: self
+            persistCredentials: false
+          - bash: |
+              set -euo pipefail
+              python3 pipelines-mock/scripts/promote.py preflight
+              [[ "$BUILD_SOURCEBRANCH" == refs/heads/main && "$BUILD_REASON" == Manual ]] || {
+                echo 'Start mock Recovery manually from main.' >&2; exit 1;
+              }
+              echo "MOCK only: check previous-slot Rollback assumptions; no Azure inspection"
+            displayName: Require manual main Recovery
+      - job: ApproveRollback
+        dependsOn: CheckTarget
+        pool: server
+        timeoutInMinutes: 130
+        steps:
+          - task: ManualValidation@1
+            timeoutInMinutes: 120
+            inputs:
+              notifyUsers: ''
+              approvers: ${{ parameters.rollbackApprovers }}
+              allowApproversToApproveTheirOwnRuns: true
+              onTimeout: reject
+              instructions: Mock previous-version PROD Slot Rollback only; no actual Azure operation.
+  - stage: Rollback
+    dependsOn: Confirm
+    jobs:
+      - job: MockRollback
+        steps:
+          - checkout: none
+          # - task: AzureAppServiceManage@0
+          #   inputs:
+          #     azureSubscription: <disabled>
+          #     Action: Swap Slots
+          #     SourceSlot: staging
+          #     SwapWithProduction: true
+          - bash: echo "MOCK PROD Slot re-Swap; no Build, Artifact redistribution or Tag write"
+            displayName: Mock previous-slot Rollback

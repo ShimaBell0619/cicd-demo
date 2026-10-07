@@ -1,0 +1,26 @@
+name: mock-ci-$(Date:yyyyMMdd).$(Rev:r)
+trigger:
+  branches:
+    include: [develop]
+# Configure mock CI Build validation on develop/main in Azure Repos.
+pr: none
+pool:
+  vmImage: ubuntu-24.04
+# Original Self-hosted pool/demands are intentionally disabled in this mock.
+steps:
+  - checkout: self
+    clean: true
+    persistCredentials: false
+  - bash: python3 pipelines-mock/scripts/promote.py preflight
+    displayName: Require isolated Azure Repos mock repository
+  - template: templates/build.yml
+    parameters:
+      publish: false
+  - bash: |
+      set -euo pipefail
+      python3 pipelines-mock/scripts/artifact.py verify "$ARTIFACT_DIR"
+      echo "MOCK DEV deploy: no Azure resource operation"
+    displayName: Mock DEV deploy after develop merge or manual execution
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.Reason'], 'Manual')))
+    env:
+      ARTIFACT_DIR: $(Build.ArtifactStagingDirectory)/release

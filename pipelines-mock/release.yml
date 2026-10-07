@@ -1,0 +1,189 @@
+# Git-flow mock: real Build/Artifact/PR/Tag; no Azure deploy, swap or health check.
+name: mock-release-$(Build.SourceBranchName)-$(Date:yyyyMMdd).$(Rev:r)
+trigger: none
+pr: none
+parameters:
+  - name: uatApprovers
+    type: string
+    default: shimaoka0619@gmail.com
+  - name: prodApprovers
+    type: string
+    default: shimaoka0619@gmail.com
+  - name: mockSwapResult
+    displayName: Simulated Slot Swap result
+    type: string
+    default: succeeded
+    values: [succeeded, failed]
+variables:
+  RELEASE_BUILD: 'true'
+# pool.name / Self-hosted demands are commented out; all Agent jobs use hosted Ubuntu.
+# pool:
+#   name: <east-or-west-self-hosted-pool>
+pool:
+  vmImage: ubuntu-24.04
+stages:
+  - stage: Build
+    jobs:
+      - job: Build
+        steps:
+          - checkout: self
+            clean: true
+            persistCredentials: false
+          - bash: |
+              set -euo pipefail
+              [[ "$BUILD_REASON" == Manual ]] || { echo 'Start Release manually.' >&2; exit 1; }
+              python3 pipelines-mock/scripts/promote.py preflight
+              python3 -c 'import sys; sys.path.insert(0, "pipelines-mock/scripts"); from artifact import identity; print(identity())'
+            displayName: Require manual release/vX.Y.Z or hotfix/vX.Y.Z
+          - template: templates/build.yml
+  - stage: DEV
+    dependsOn: Build
+    jobs:
+      - job: MockDEV
+        steps:
+          - checkout: self
+            clean: true
+            persistCredentials: false
+          - download: current
+            artifact: release
+          - template: templates/deploy.yml
+            parameters:
+              environment: DEV
+  - stage: UAT
+    dependsOn: DEV
+    jobs:
+      - job: MockUAT
+        steps:
+          - checkout: self
+            clean: true
+            persistCredentials: false
+          - download: current
+            artifact: release
+          - template: templates/deploy.yml
+            parameters:
+              environment: UAT
+      - job: AcceptUAT
+        dependsOn: MockUAT
+        pool: server
+        timeoutInMinutes: 130
+        steps:
+          - task: ManualValidation@1
+            timeoutInMinutes: 120
+            inputs:
+              notifyUsers: ''
+              approvers: ${{ parameters.uatApprovers }}
+              allowApproversToApproveTheirOwnRuns: true
+              onTimeout: reject
+              instructions: |
+                MOCK UAT acceptance only: no application was deployed or business-tested.
+                Check Run $(Build.BuildId), $(Build.SourceBranch), candidate $(Build.SourceVersion).
+                Accept this mock candidate. Main PR merge is a separate step after acceptance.
+  - stage: Merge
+    displayName: Main PR completion and retained Merge Commit
+    dependsOn: UAT
+    jobs:
+      - job: WaitForMainMerge
+        pool: server
+        timeoutInMinutes: 130
+        steps:
+          - task: ManualValidation@1
+            timeoutInMinutes: 120
+            inputs:
+              notifyUsers: ''
+              approvers: ${{ parameters.uatApprovers }}
+              allowApproversToApproveTheirOwnRuns: true
+              onTimeout: reject
+              instructions: |
+                After UAT acceptance, approve/complete the candidate PR into main in Repos.
+                Use Merge commit (no squash/rebase). Source must be $(Build.SourceVersion).
+                Resume after the PR is completed. This pause is NOT PR merge approval.
+                Do not change the candidate; changed source requires a new Run and UAT.
+      - job: CaptureMerge
+        dependsOn: WaitForMainMerge
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+            fetchTags: false
+            persistCredentials: true
+          - download: current
+            artifact: release
+          - bash: python3 pipelines-mock/scripts/promote.py capture "$ARTIFACT_DIR"
+            name: capture
+            displayName: Capture exact completed main PR Merge Commit and verify candidate content
+            env:
+              ARTIFACT_DIR: $(Pipeline.Workspace)/release
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+  - stage: PRODApproval
+    dependsOn: Merge
+    jobs:
+      - job: ApprovePROD
+        pool: server
+        timeoutInMinutes: 130
+        steps:
+          - task: ManualValidation@1
+            timeoutInMinutes: 120
+            inputs:
+              notifyUsers: ''
+              approvers: ${{ parameters.prodApprovers }}
+              allowApproversToApproveTheirOwnRuns: true
+              onTimeout: reject
+              instructions: |
+                Approve mock PROD continuation after UAT acceptance and completed main PR.
+                No Azure application or Slot will be changed.
+  - stage: PROD
+    dependsOn: [Merge, PRODApproval]
+    variables:
+      retainedMergeSha: $[ stageDependencies.Merge.CaptureMerge.outputs['capture.mergeCommitSha'] ]
+      retainedMainPrId: $[ stageDependencies.Merge.CaptureMerge.outputs['capture.mainPrId'] ]
+    jobs:
+      - job: MockPROD
+        steps:
+          - checkout: self
+            clean: true
+            persistCredentials: false
+          - download: current
+            artifact: release
+          - template: templates/deploy.yml
+            parameters:
+              environment: PROD-staging
+          # - task: AzureAppServiceManage@0
+          #   inputs:
+          #     azureSubscription: <disabled>
+          #     Action: Swap Slots
+          #     WebAppName: <disabled>
+          #     ResourceGroupName: <disabled>
+          #     SourceSlot: staging
+          #     SwapWithProduction: true
+          - bash: |
+              set -euo pipefail
+              if [[ "$MOCK_SWAP_RESULT" != succeeded ]]; then
+                echo "MOCK Slot Swap failed. No Tag or DR will run." >&2
+                exit 1
+              fi
+              echo "MOCK Slot Swap succeeded; no actual Slot operation"
+              echo "##vso[task.setvariable variable=mockSwapSucceeded]true"
+            displayName: Mock Slot Swap
+            env:
+              MOCK_SWAP_RESULT: ${{ parameters.mockSwapResult }}
+          - bash: python3 pipelines-mock/scripts/promote.py tag "$ARTIFACT_DIR"
+            displayName: Tag retained main Merge Commit after successful mock Swap
+            env:
+              ARTIFACT_DIR: $(Pipeline.Workspace)/release
+              MERGE_COMMIT_SHA: $(retainedMergeSha)
+              MAIN_PR_ID: $(retainedMainPrId)
+              MOCK_SWAP_SUCCEEDED: $(mockSwapSucceeded)
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+  - stage: DR
+    dependsOn: PROD
+    jobs:
+      - job: MockDR
+        steps:
+          - checkout: self
+            clean: true
+            persistCredentials: false
+          - download: current
+            artifact: release
+          - template: templates/deploy.yml
+            parameters:
+              environment: DR
